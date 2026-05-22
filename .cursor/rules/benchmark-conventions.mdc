@@ -1,0 +1,35 @@
+---
+description: 本仓库目录约定、评价流程与兄弟工程解耦原则
+alwaysApply: true
+---
+
+# price_forecast_benchmark 工程约定
+
+## 定位
+
+- **外部评价**：只读 `*_prj/output/` 预测 CSV，不 import、不修改兄弟工程训练代码。
+- **本仓研发**：新算法放在 `algorithms/`，预测输出到 `runs/predictions/<market_id>/`。
+- **评价输出**：统一写到 `runs/benchmark/<run-name>/`，勿使用已废弃的 `output/` 根目录。
+
+## 路径与 CLI
+
+| 用途 | 路径 / 命令 |
+|------|-------------|
+| 市场配置 | `config/markets/*.yaml` |
+| 评价库 | `pfbench/` |
+| 批量评价 | `python scripts/run_benchmark.py` |
+| 外部预测 | `--sources external` |
+| 本仓预测 | `--sources local` |
+
+环境变量：`WORKSPACE_ROOT` 指向含 `neimeng_prj` 等的 workspace；YAML 中可用 `${PROJECT_ROOT}`、`${WORKSPACE_ROOT}`。
+
+## 代码改动原则
+
+- 评价逻辑集中在 `pfbench/`，脚本层保持薄。
+- 注册新市场：复制 `config/markets/_template.yaml`，勿硬编码绝对路径（用环境变量占位）。
+- 跨市场指标窗口以各市场 YAML 的 `test_start` / `test_end` 为准，保证可比性。
+
+## 内蒙相关
+
+- 内蒙实验预测仍来自 `neimeng_prj/output/experiments/`，市场 ID 为 `neimeng_sudun`、`neimeng_hongjing`。
+- 反向日物理规则检测器在兄弟工程 `neimeng_prj/src/anomaly/rule_detector.py`；若需在本仓复用，放在 `pfbench/` 或 `algorithms/` 并配置化阈值，勿复制训练管线。

@@ -1,0 +1,101 @@
+market_id: chongqing
+market_name: 重庆
+region: chongqing
+version: v1
+freq: 15min
+time_range:
+- '2025-11-01 00:00:00'
+- '2026-04-13 23:45:00'
+n_rows: 15744
+n_columns: 80
+columns:
+- total_gen_actual
+- total_gen_pred_v1
+- total_gen_pred_v2
+- total_load_actual
+- total_load_pred_v1
+- renewable_actual
+- renewable_pred_v1
+- renewable_pred_v2
+- solar_pred_v1
+- solar_pred_v2
+- wind_pred_v1
+- wind_pred_v2
+- hydro_actual
+- hydro_pred_v1
+- hydro_pred_v2
+- trans_actual
+- trans_pred_v1
+- trans_pred_v2
+- nonmarket_gen_actual
+- nonmarket_gen_pred_v1
+- nonmarket_gen_pred_v2
+- reliability_clearing_price
+- reliability_clearing_power
+- reliability_unit_count
+- market_clearing_price
+- market_clearing_power
+- market_unit_count
+- realtime_clearing_energy
+- realtime_clearing_price
+- realtime_unit_count
+- id
+- city
+- district
+- admin1
+- country
+- country_code
+- latitude
+- longitude
+- timezone
+- time
+- date
+- hour
+- temperature_2m
+- relative_humidity_2m
+- dew_point_2m
+- apparent_temperature
+- precipitation
+- rain
+- snowfall
+- snow_depth
+- weather_code
+- pressure_msl
+- surface_pressure
+- cloud_cover
+- cloud_cover_low
+- cloud_cover_mid
+- cloud_cover_high
+- shortwave_radiation
+- shortwave_radiation_instant
+- direct_radiation
+- direct_radiation_instant
+- direct_normal_irradiance
+- direct_normal_irradiance_instant
+- diffuse_radiation
+- diffuse_radiation_instant
+- terrestrial_radiation
+- terrestrial_radiation_instant
+- wind_speed_10m
+- wind_direction_10m
+- wind_gusts_10m
+- et0_fao_evapotranspiration
+- vapour_pressure_deficit
+- soil_temperature_0_to_7cm
+- soil_temperature_7_to_28cm
+- soil_temperature_28_to_100cm
+- soil_temperature_100_to_255cm
+- soil_moisture_0_to_7cm
+- soil_moisture_7_to_28cm
+- soil_moisture_28_to_100cm
+- soil_moisture_100_to_255cm
+irregular_steps: 0
+total_numeric_na: 31872
+preprocess: []
+source:
+  path: /root/workspace/chongqing_prj/sql_data/chongqing_market_join.csv
+  sha256: 287b9ec6d5276c0ff1e141a354ce90afb9fe0158db819f4a31fbba2bf1990ebe
+  raw_rows: 45120
+built_at: '2026-05-22T06:27:37+00:00'
+git_rev: null
+build_command: python scripts/build_dataset.py --market chongqing --version v1

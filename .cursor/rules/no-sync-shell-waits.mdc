@@ -1,0 +1,33 @@
+---
+description: 所有 Shell 调用必须立即后台化，禁止同步阻塞
+alwaysApply: true
+---
+
+# 禁止同步阻塞 Shell
+
+## 核心规则
+
+**所有 Shell 调用一律使用 `block_until_ms: 0` 立即后台化。**
+
+不要用默认的 30s 同步等待，不要设大数值（如 120000ms）。这台机器 conda Python 启动和 pip install 都很慢（>60s），同步等待会导致 UI 完全沉默，用户误以为卡死。
+
+## 做法
+
+1. **发命令时**：`block_until_ms: 0`，立即返回 shell_id
+2. **先说一句话**：告诉用户"已后台启动，pid=X"
+3. **轮询结果**：读 terminal 文件或用 AwaitShell，每 20-30s 一段，每段间都输出文字
+4. **快速命令也后台**：哪怕 `ls` / `echo` 也用 0，因为 conda 激活本身就慢
+
+## 示例
+
+```
+# ✅ 正确
+Shell(cmd, block_until_ms=0)
+→ "已后台跑，等一下看结果"
+→ 读 terminal 文件
+→ 汇报
+
+# ❌ 错误：任何 block_until_ms > 0 都禁止
+Shell(cmd, block_until_ms=30000)   # 默认值，会卡死
+Shell(cmd, block_until_ms=120000)  # 更糟
+```

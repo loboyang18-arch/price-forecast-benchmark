@@ -1,0 +1,13 @@
+# 规范测试流程配置（占位，供 run_pipeline.py 后续实现）
+pipeline_id: example_pipeline
+name: 示例流程
+description: 数据准备 → 推理 → 评价
+
+markets:
+  - example_market
+
+# 本仓算法入口（相对 algorithms/）
+algorithm: baselines/example
+
+# 评价输出子目录（runs/benchmark/<output_run_name>/）
+output_run_name: example_pipeline

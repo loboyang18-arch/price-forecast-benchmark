@@ -1,0 +1,6 @@
+numpy>=1.24
+pandas>=2.0
+PyYAML>=6.0
+pyarrow>=14.0   # parquet 读写（统一数据集冻结）
+# 可选：与内蒙/重庆工程一致的扩展指标（profile_corr、composite 等）
+# price_forecast_eval>=0.1.0

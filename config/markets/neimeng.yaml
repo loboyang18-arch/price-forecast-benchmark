@@ -1,0 +1,29 @@
+market_id: neimeng
+name: 内蒙古
+region: neimeng
+task: da
+freq: hourly
+timezone: Asia/Shanghai
+test_start: "2026-01-27"
+test_end: "2026-04-17"
+
+prediction_globs:
+  - "${WORKSPACE_ROOT}/neimeng_prj/output/experiments/**/test_predictions_hourly.csv"
+
+data:
+  version: v1
+  source: "${WORKSPACE_ROOT}/neimeng_prj/output/dws_15min_features_ext_data4_hongjing.csv"
+  source_ts_col: ts
+  freq: 15min
+  preprocess:
+    - fill_sudun_prices
+    - fill_hongjing_from_unified
+    - fill_unified_from_sudun
+  time_range: ["2025-01-13 00:00:00", "2026-04-17 23:45:00"]
+
+notes: |
+  统一数据源含 22 列特征 + 苏敦/红井/统一出清价。
+  fill_sudun_prices 补齐苏敦三列（09-29 整日缺失用 price_unified 代理）。
+  fill_hongjing_from_unified 补齐红井三列（09-29 整日缺失用 price_unified 代理）。
+  fill_unified_from_sudun 补齐统一出清价（04-09 整日缺失用苏敦节点价代理）。
+  target_col 和 train/val/test 切分由下游算法自行决定。

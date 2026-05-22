@@ -1,0 +1,35 @@
+# 复制本文件并重命名，注册新市场
+market_id: example_market
+name: 示例市场
+region: other
+task: da          # da | rt
+freq: hourly      # hourly | 15min
+timezone: Asia/Shanghai
+test_start: null  # YYYY-MM-DD，null 表示不裁剪
+test_end: null
+
+# --- 兄弟工程（external）---
+prediction_globs:
+  - "${WORKSPACE_ROOT}/your_prj/output/**/test_predictions_hourly.csv"
+# prediction_files:
+#   - ${WORKSPACE_ROOT}/your_prj/output/one_model.csv
+
+# --- 本仓研发（local），留空则默认扫描 runs/predictions/<market_id>/**/*.csv ---
+# local_prediction_globs:
+#   - "${PROJECT_ROOT}/runs/predictions/example_market/**/*.csv"
+# local_prediction_files: []
+
+# --- 统一冻结数据集（可选；配置后可被 scripts/build_dataset.py 处理）---
+# data:
+#   version: v1
+#   source: "${WORKSPACE_ROOT}/your_prj/output/dws_15min.csv"
+#   source_ts_col: ts              # 默认 ts；重庆 sql 用 datetime
+#   target_col: your_price_col
+#   freq: 15min                    # 当前只支持 15min 为主源；hourly 由聚合派生
+#   preprocess: []                 # 可选钩子，例如 [fill_sudun_prices]
+#   splits:
+#     train: ["YYYY-MM-DD HH:MM:SS", "YYYY-MM-DD HH:MM:SS"]
+#     val:   [..., ...]
+#     test:  [..., ...]
+
+notes: ""

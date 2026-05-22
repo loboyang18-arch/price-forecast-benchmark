@@ -1,0 +1,45 @@
+market_id: neimeng
+market_name: 内蒙古
+region: neimeng
+version: v1
+freq: 15min
+time_range:
+- '2025-01-13 00:00:00'
+- '2026-04-17 23:45:00'
+n_rows: 44160
+n_columns: 21
+columns:
+- east_send_forecast
+- load_actual
+- load_forecast
+- price_dayahead_preclear_energy
+- price_hbd
+- price_hbx
+- price_hongjing_220kv1m_cong
+- price_hongjing_220kv1m_energy
+- price_hongjing_220kv1m_nodal
+- price_sudun_500kv1m_cong
+- price_sudun_500kv1m_energy
+- price_sudun_500kv1m_nodal
+- price_unified
+- renewable_actual
+- renewable_forecast
+- reserve_neg_capacity
+- reserve_pos_capacity
+- solar_actual
+- solar_forecast
+- wind_actual
+- wind_forecast
+irregular_steps: 0
+total_numeric_na: 27264
+preprocess:
+- fill_sudun_prices
+- fill_hongjing_from_unified
+- fill_unified_from_sudun
+source:
+  path: /root/workspace/neimeng_prj/output/dws_15min_features_ext_data4_hongjing.csv
+  sha256: 55e0174ad7a6e962e78cc7582671885dc366b554466d1063757cf32fcef1193d
+  raw_rows: 138432
+built_at: '2026-05-22T06:27:48+00:00'
+git_rev: null
+build_command: python scripts/build_dataset.py --market neimeng --version v1

@@ -1,0 +1,26 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.venv/
+venv/
+*.egg-info/
+.DS_Store
+.env
+
+# 运行产物（排行榜、本仓预测 CSV、流程中间结果）
+runs/*
+!runs/.gitkeep
+!runs/benchmark/.gitkeep
+!runs/predictions/.gitkeep
+!runs/data/
+
+# 冻结数据集：parquet 大文件不入库，meta.yaml/manifest 入库
+runs/data/**/*.parquet
+runs/data/**/*.csv
+!runs/data/README.md
+!runs/data/manifest.json
+!runs/data/**/meta.yaml
+
+# 旧路径（迁移期保留忽略规则）
+output/*

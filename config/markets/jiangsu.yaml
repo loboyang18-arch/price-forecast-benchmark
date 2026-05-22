@@ -1,0 +1,10 @@
+market_id: jiangsu
+name: 江苏
+region: jiangsu
+task: da
+freq: hourly
+timezone: Asia/Shanghai
+prediction_globs:
+  - "${WORKSPACE_ROOT}/jiangsu_prj/output/**/test_predictions_hourly.csv"
+  - "${WORKSPACE_ROOT}/jiangsu_prj/output/**/da_result*.csv"
+  - "${WORKSPACE_ROOT}/jiangsu_prj/output/**/rt_result*.csv"

@@ -1,0 +1,29 @@
+{
+  "datasets": {
+    "chongqing": {
+      "version": "v1",
+      "time_range": [
+        "2025-11-01 00:00:00",
+        "2026-04-13 23:45:00"
+      ],
+      "n_rows": 15744,
+      "n_columns": 80,
+      "source_path": "/root/workspace/chongqing_prj/sql_data/chongqing_market_join.csv",
+      "source_sha256": "287b9ec6d5276c0ff1e141a354ce90afb9fe0158db819f4a31fbba2bf1990ebe",
+      "built_at": "2026-05-22T06:27:37+00:00"
+    },
+    "neimeng": {
+      "version": "v1",
+      "time_range": [
+        "2025-01-13 00:00:00",
+        "2026-04-17 23:45:00"
+      ],
+      "n_rows": 44160,
+      "n_columns": 21,
+      "source_path": "/root/workspace/neimeng_prj/output/dws_15min_features_ext_data4_hongjing.csv",
+      "source_sha256": "55e0174ad7a6e962e78cc7582671885dc366b554466d1063757cf32fcef1193d",
+      "built_at": "2026-05-22T06:27:48+00:00"
+    }
+  },
+  "updated_at": "2026-05-22T06:27:48+00:00"
+}

@@ -1,0 +1,24 @@
+market_id: chongqing
+name: 重庆
+region: chongqing
+task: da
+freq: hourly
+timezone: Asia/Shanghai
+test_start: "2026-03-03"
+test_end: "2026-04-13"
+
+prediction_globs:
+  - "${WORKSPACE_ROOT}/chongqing_prj/output/**/test_predictions_hourly.csv"
+  - "${WORKSPACE_ROOT}/chongqing_prj/output/**/*_pred*.csv"
+
+data:
+  version: v1
+  source: "${WORKSPACE_ROOT}/chongqing_prj/sql_data/chongqing_market_join.csv"
+  source_ts_col: datetime
+  freq: 15min
+  time_range: ["2025-11-01 00:00:00", "2026-04-13 23:45:00"]
+
+notes: |
+  15min 真源含 81 列（市场 + 天气）。
+  market_clearing_price 从 2025-11 起有值，之前全 NaN。
+  target_col 和 train/val/test 切分由下游算法自行决定。
