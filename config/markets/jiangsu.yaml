@@ -4,7 +4,27 @@ region: jiangsu
 task: da
 freq: hourly
 timezone: Asia/Shanghai
+test_start: "2025-11-01"
+test_end: "2025-12-31"
+
 prediction_globs:
-  - "${WORKSPACE_ROOT}/jiangsu_prj/output/**/test_predictions_hourly.csv"
-  - "${WORKSPACE_ROOT}/jiangsu_prj/output/**/da_result*.csv"
-  - "${WORKSPACE_ROOT}/jiangsu_prj/output/**/rt_result*.csv"
+  - "${WORKSPACE_ROOT}/jiangsu_prj/models/**/metrics.json"
+
+data:
+  version: v1
+  source: "${WORKSPACE_ROOT}/jiangsu_prj/warehouse/feature_ready/V0/power_market_feature_ready_wide.parquet"
+  source_ts_col: timestamp
+  freq: 15min
+  preprocess:
+    - shift_ts_to_period_start
+    - drop_qflag_columns
+    - fill_reserve_from_prev_week
+  time_range: ["2025-09-01 00:00:00", "2025-12-31 23:45:00"]
+
+notes: |
+  数据源为 jiangsu_prj warehouse 已清洗的 feature_ready 宽表。
+  含江南(jn)/江北(jb)两节点的日前+实时电价及供需特征。
+  shift_ts_to_period_start 将时间戳从 period-end 左移 15min 到 period-start，与重庆/内蒙一致。
+  drop_qflag_columns 去掉 34 个质量标记列，保留 37 列。
+  fill_reserve_from_prev_week 补齐 11-16/11-23 两日正负备用（用前一周同时段）。
+  target_col 和 train/val/test 切分由下游算法自行决定。

@@ -79,6 +79,7 @@ python scripts/build_dataset.py --market all
 from pfbench.data import load_market_data
 df, meta = load_market_data("neimeng")       # 44160 行 × 21 列
 df, meta = load_market_data("chongqing")     # 15744 行 × 80 列
+df, meta = load_market_data("jiangsu")       # 11712 行 × 36 列
 
 # 算法自行选择 target、切分、聚合
 target = df["price_sudun_500kv1m_nodal"]
@@ -88,8 +89,9 @@ hourly = df.resample("1h").mean()
 
 | market_id | 主源 | 列数 | 时间范围 |
 |-----------|------|------|---------|
-| `neimeng` | `neimeng_prj/output/dws_15min_features_ext_data4_hongjing.csv` | 21 | 2025-01-13 ~ 2026-04-17 |
 | `chongqing` | `chongqing_prj/sql_data/chongqing_market_join.csv` | 80 | 2025-11-01 ~ 2026-04-13 |
+| `jiangsu` | `jiangsu_prj/warehouse/feature_ready/V0/...parquet` | 36 | 2025-09-01 ~ 2025-12-31 |
+| `neimeng` | `neimeng_prj/output/dws_15min_features_ext_data4_hongjing.csv` | 21 | 2025-01-13 ~ 2026-04-17 |
 
 详见 [CHANGELOG.md](CHANGELOG.md)。
 

@@ -1,0 +1,60 @@
+market_id: jiangsu
+market_name: 江苏
+region: jiangsu
+version: v1
+freq: 15min
+time_range:
+- '2025-09-01 00:00:00'
+- '2025-12-31 23:45:00'
+n_rows: 11712
+n_columns: 36
+columns:
+- trade_date
+- hh_index
+- gas_actual_江北
+- gas_actual_江南
+- gas_plan_boundary_江北
+- gas_plan_boundary_江南
+- gas_plan_clearing_江北
+- gas_plan_clearing_江南
+- load_actual_total_汇总
+- load_forecast_boundary_汇总
+- load_forecast_clearing_汇总
+- price_dayahead_jb_node_江北
+- price_dayahead_jb_江北
+- price_dayahead_jn_node_江南
+- price_dayahead_jn_江南
+- price_realtime_jb_final_江北
+- price_realtime_jb_node_江北
+- price_realtime_jn_final_江南
+- price_realtime_jn_node_江南
+- pv_actual_江北
+- pv_actual_江南
+- pv_forecast_boundary_江北
+- pv_forecast_boundary_江南
+- pv_forecast_clearing_江北
+- pv_forecast_clearing_江南
+- receive_actual_huadong_华东
+- receive_plan_boundary_汇总
+- receive_plan_clearing_汇总
+- reserve_negative_汇总
+- reserve_positive_汇总
+- wind_actual_江北
+- wind_actual_江南
+- wind_forecast_boundary_江北
+- wind_forecast_boundary_江南
+- wind_forecast_clearing_江北
+- wind_forecast_clearing_江南
+irregular_steps: 0
+total_numeric_na: 0
+preprocess:
+- shift_ts_to_period_start
+- drop_qflag_columns
+- fill_reserve_from_prev_week
+source:
+  path: /root/workspace/jiangsu_prj/warehouse/feature_ready/V0/power_market_feature_ready_wide.parquet
+  sha256: 3b4fcd4ed5c1087e2bb8ca5cb6f18caf6bf4f48acb3774c5ddb50218c5a627cf
+  raw_rows: 11712
+built_at: '2026-05-22T07:51:30+00:00'
+git_rev: d279c83
+build_command: python scripts/build_dataset.py --market jiangsu --version v1

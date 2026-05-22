@@ -23,6 +23,7 @@ runs/data/
 | 市场 | source | 列数 | 时间范围 | 行数 | 预处理 |
 |------|--------|------|---------|------|--------|
 | chongqing | `chongqing_prj/sql_data/chongqing_market_join.csv` | 80 | 2025-11-01 ~ 2026-04-13 | 15,744 | — |
+| jiangsu | `jiangsu_prj/warehouse/feature_ready/V0/power_market_feature_ready_wide.parquet` | 36 | 2025-09-01 ~ 2025-12-31 | 11,712 | `shift_ts_to_period_start` + `drop_qflag_columns` + `fill_reserve_from_prev_week` |
 | neimeng | `neimeng_prj/output/dws_15min_features_ext_data4_hongjing.csv` | 21 | 2025-01-13 ~ 2026-04-17 | 44,160 | `fill_sudun_prices` + `fill_hongjing_from_unified` + `fill_unified_from_sudun` |
 
 ### 4. 缺测填补
@@ -33,13 +34,19 @@ runs/data/
 - `fill_hongjing_from_unified`：红井节点价三列在 2025-09-29 整日缺失 → 用 `price_unified` 代理
 - `fill_unified_from_sudun`：统一出清价在 2026-04-09 整日缺失 → 用苏敦节点价代理
 
-填补后所有价格列在数据范围内无缺失。其他特征列（如 `price_dayahead_preclear_energy`）的 NaN 保持原样，由算法自行处理。
+**江苏预处理（`jiangsu_fill.py`）：**
+- `shift_ts_to_period_start`：时间戳从 period-end（00:15~次日00:00）左移 15min 统一为 period-start（00:00~23:45），与重庆/内蒙一致
+- `drop_qflag_columns`：去掉 34 个 `_qflag` 质量标记列，仅保留业务特征
+- `fill_reserve_from_prev_week`：正负备用在 2025-11-16/11-23（周日）整日缺失 → 用前一周同时段填补
+
+填补后所有数值列在数据范围内无缺失。
 
 ### 5. 校验结果
 
 ```
-chongqing/v1:  15744 行 × 80 列  irregular_steps=0
-neimeng/v1:    44160 行 × 21 列  irregular_steps=0
+chongqing/v1:  15744 行 × 80 列  irregular_steps=0  numeric_na=0
+jiangsu/v1:    11712 行 × 36 列  irregular_steps=0  numeric_na=0
+neimeng/v1:    44160 行 × 21 列  irregular_steps=0  numeric_na=0
 ```
 
 时间轴连续、无跳跃、无重复。
@@ -67,7 +74,9 @@ hourly = df.resample("1h").mean()
 | `pfbench/data/builder.py` | 构建器：读源 → 裁剪 → 预处理 → 对齐 → 写 parquet |
 | `pfbench/data/loader.py` | 加载器：读 data.parquet + meta.yaml |
 | `pfbench/data/checks.py` | 校验：时间完整性、缺测统计 |
-| `pfbench/data/sudun_fill.py` | 缺测填补函数（苏敦/红井/统一出清价） |
+| `pfbench/data/sudun_fill.py` | 内蒙缺测填补函数（苏敦/红井/统一出清价） |
+| `pfbench/data/jiangsu_fill.py` | 江苏预处理函数（去 qflag + 备用填补） |
+| `config/markets/jiangsu.yaml` | 江苏市场配置 |
 | `scripts/build_dataset.py` | CLI 入口 |
 
 ### 8. Cursor 规则

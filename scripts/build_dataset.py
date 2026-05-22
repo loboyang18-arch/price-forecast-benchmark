@@ -24,6 +24,7 @@ from pfbench.markets import DEFAULT_WORKSPACE
 
 SUPPORTED_MARKETS = (
     "chongqing",
+    "jiangsu",
     "neimeng",
 )
 

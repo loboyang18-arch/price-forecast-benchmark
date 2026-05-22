@@ -33,6 +33,7 @@ import yaml
 
 from ..markets import DEFAULT_WORKSPACE
 from ..paths import DATA_DIR, MARKETS_DIR, ROOT
+from .jiangsu_fill import drop_qflag_columns, fill_reserve_from_prev_week, shift_ts_to_period_start
 from .sudun_fill import fill_hongjing_from_unified, fill_sudun_price_columns, fill_unified_from_sudun
 
 logger = logging.getLogger(__name__)
@@ -41,6 +42,9 @@ _PREPROCESS_REGISTRY = {
     "fill_sudun_prices": fill_sudun_price_columns,
     "fill_hongjing_from_unified": fill_hongjing_from_unified,
     "fill_unified_from_sudun": fill_unified_from_sudun,
+    "shift_ts_to_period_start": shift_ts_to_period_start,
+    "drop_qflag_columns": drop_qflag_columns,
+    "fill_reserve_from_prev_week": fill_reserve_from_prev_week,
 }
 
 
@@ -103,7 +107,12 @@ def _read_source(cfg: dict, workspace: Path) -> tuple[pd.DataFrame, Path]:
         raise BuildError(f"源文件不存在: {src_path}")
     ts_col = cfg.get("source_ts_col", "ts")
     logger.info("读取源文件: %s", src_path)
-    df = pd.read_csv(src_path, parse_dates=[ts_col])
+    if src_path.suffix == ".parquet":
+        df = pd.read_parquet(src_path)
+        if ts_col in df.columns:
+            df[ts_col] = pd.to_datetime(df[ts_col])
+    else:
+        df = pd.read_csv(src_path, parse_dates=[ts_col])
     if ts_col != "ts":
         df = df.rename(columns={ts_col: "ts"})
     if "ts" not in df.columns:

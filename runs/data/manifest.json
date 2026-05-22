@@ -23,7 +23,19 @@
       "source_path": "/root/workspace/neimeng_prj/output/dws_15min_features_ext_data4_hongjing.csv",
       "source_sha256": "55e0174ad7a6e962e78cc7582671885dc366b554466d1063757cf32fcef1193d",
       "built_at": "2026-05-22T06:27:48+00:00"
+    },
+    "jiangsu": {
+      "version": "v1",
+      "time_range": [
+        "2025-09-01 00:00:00",
+        "2025-12-31 23:45:00"
+      ],
+      "n_rows": 11712,
+      "n_columns": 36,
+      "source_path": "/root/workspace/jiangsu_prj/warehouse/feature_ready/V0/power_market_feature_ready_wide.parquet",
+      "source_sha256": "3b4fcd4ed5c1087e2bb8ca5cb6f18caf6bf4f48acb3774c5ddb50218c5a627cf",
+      "built_at": "2026-05-22T07:51:30+00:00"
     }
   },
-  "updated_at": "2026-05-22T06:27:48+00:00"
+  "updated_at": "2026-05-22T07:51:30+00:00"
 }
