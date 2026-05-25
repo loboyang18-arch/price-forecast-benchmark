@@ -7,7 +7,7 @@ alwaysApply: true
 
 ## 核心规则
 
-**每次算法实验运行完成后，必须将结果写入 `runs/RESULTS.md`。**
+**每次算法实验运行完成后，必须将结果写入 `RESULTS.md`（项目根目录）。**
 
 这是平台级的横向比较文档，所有算法、所有市场的实验结果在此统一记录，便于跨算法比较。
 
@@ -18,13 +18,13 @@ alwaysApply: true
 当一个算法在任何市场完成实验（包括新算法、参数调优、重跑），必须：
 
 1. 读取 `runs/predictions/<market>/<algorithm>/metrics.json` 中的指标
-2. 更新 `runs/RESULTS.md` 中对应的表格行
+2. 更新 `RESULTS.md` 中对应的表格行
 3. 如果是新算法，在文档中新增一个"算法详情"小节
 4. 更新"更新日志"表格，注明本次变更
 
 ### 2. 横向比较表必须保持最新
 
-`RESULTS.md` 的 §2 "算法横向比较" 中的 MAE/RMSE 对比表必须反映最新结果：
+`RESULTS.md`（项目根目录）的 §2 "算法横向比较" 中的 MAE/RMSE 对比表必须反映最新结果：
 - 每个市场每个算法一列
 - 标注最优值（加粗）和相对改进百分比
 - 如果某个指标某算法未输出，标注"—"
@@ -32,7 +32,7 @@ alwaysApply: true
 ### 3. 文档结构
 
 ```
-runs/RESULTS.md
+RESULTS.md  (项目根目录)
 ├── §1 测试集划分（统一）     ← 来自 config/markets/*.yaml
 ├── §2 算法横向比较           ← MAE/RMSE/Corr 对比表
 ├── §3 各算法详情             ← 每个算法一小节
@@ -56,6 +56,6 @@ python algorithms/new_algo/run.py --market all
 # ✅ GOOD：跑完实验后更新 RESULTS.md
 python algorithms/new_algo/run.py --market all
 → 读取 metrics.json
-→ 更新 runs/RESULTS.md（对比表 + 算法详情 + 更新日志）
+→ 更新 RESULTS.md（对比表 + 算法详情 + 更新日志）
 → 告知用户结果
 ```
