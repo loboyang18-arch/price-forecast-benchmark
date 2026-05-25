@@ -4,15 +4,23 @@
 
 ## 一、ML — 基于人工特征的机器学习方法
 
-| 算法 | 说明 | 源工程 | 源文件 |
-|------|------|--------|--------|
-| **LightGBM** | 标准 LightGBM 回归。人工构造特征：boundary 曲线、日历（dow/month/is_weekend/hh_index）、历史价格多阶滞后。支持多决策时点（A0/A1/A2/B）和分位数预测（quantile_k80）。 | jiangsu_prj | `scripts/train_realtime.py` |
-| **LightGBM-Residual** | 两阶段残差建模：第一阶段用 LightGBM 分类器识别底价时段，第二阶段对非底价时段做 LightGBM 回归，最终通过自适应 model-naive 混合（grid-search alpha）后处理。 | jiangsu_prj | `scripts/train_dayahead.py` |
+| 算法 | 说明 | 本工程实现 | 源工程 |
+|------|------|-----------|--------|
+| **LightGBM-Baseline** | 标准 LightGBM 回归 baseline。lag0/lag1/lag2 特征 + 日历 + 滚动统计。固定 train/test 切分，单次评估。 | `algorithms/lightgbm_baseline/` | jiangsu_prj |
+| **LightGBM-TwoStage** | 完整方法体系（移植自报告验证方案）：200+ 候选特征、Two-Stage 地板价分类器 + 回归器、多分位数回归、时间衰减加权、model-naive 自适应混合、残差校正、Expanding Window CV。 | `algorithms/lgb_twostage/` | jiangsu_prj |
 
 **共同特点：**
 - 特征由领域知识手工构造（非原始时序输入）
-- 模型为单时段独立预测（hh_index 作为特征，单模型覆盖 96 个时段）
-- Expanding window CV 按 trade_date 切分，防止数据泄漏
+- 模型为单时段独立预测（hour 作为特征，单模型覆盖 24 小时）
+- 三市场统一接口，通过 MarketConfig 适配不同市场
+
+**LightGBM-TwoStage 三市场最新结果（Expanding Window CV）：**
+
+| 市场 | 特征数 | CV折数 | Model MAE | Naive MAE | 提升 |
+|------|--------|--------|-----------|-----------|------|
+| 江苏 | 172 | 7 | 56.87 | 83.42 | +31.8% |
+| 内蒙 | 208 | 51 | 114.59 | 176.50 | +35.1% |
+| 重庆 | 171 | 13 | 43.62 | 51.20 | +14.8% |
 
 ## 二、DL — 基于原始特征的深度学习方法
 
@@ -43,11 +51,11 @@
 
 下表列出算法在各源工程中的历史版本号，便于追溯实验产出。
 
-| 算法 | 内蒙 (neimeng_prj) | 重庆 (chongqing_prj) | 江苏 (jiangsu_prj) |
-|------|---------------------|----------------------|---------------------|
-| LightGBM | — | — | realtime_v3 / v4 / v6 |
-| LightGBM-Residual | — | — | dayahead_v7_residual |
-| Conv2D-MultiTask | v8.0 系列 | — | — |
-| Transformer-Joint24h | v10.0-joint | — | — |
-| Transformer-Quantile | v10.0-quantile | — | — |
-| ResConv2D | v25 系列 | v25_deep_nm_only_sudun | — |
+| 算法 | 内蒙 (neimeng_prj) | 重庆 (chongqing_prj) | 江苏 (jiangsu_prj) | 本工程 |
+|------|---------------------|----------------------|---------------------|--------|
+| LightGBM-Baseline | — | — | realtime_v3 / v4 / v6 | `algorithms/lightgbm_baseline/` |
+| LightGBM-TwoStage | — | — | dayahead_v7_residual | `algorithms/lgb_twostage/` |
+| Conv2D-MultiTask | v8.0 系列 | — | — | 待移植 |
+| Transformer-Joint24h | v10.0-joint | — | — | 待移植 |
+| Transformer-Quantile | v10.0-quantile | — | — | 待移植 |
+| ResConv2D | v25 系列 | v25_deep_nm_only_sudun | — | 待移植 |

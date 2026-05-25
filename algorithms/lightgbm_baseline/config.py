@@ -5,7 +5,9 @@
   lag0_cols    — D日已知预测/计划值（不 shift）
   lag1_cols    — D-1日出清/价格类（shift 24h）
   lag2_cols    — D-2日实际运行值（shift 48h）
-  test_start   — 测试集起始日期
+
+注意：test_start 由 config/markets/<market_id>.yaml 统一定义，
+      通过 pfbench.market_config.get_market_split() 获取。
 """
 from __future__ import annotations
 
@@ -20,7 +22,6 @@ class MarketConfig:
     lag0_cols: List[str]
     lag1_cols: List[str]
     lag2_cols: List[str]
-    test_start: str
     price_lag_hours: List[int] = field(default_factory=lambda: [24, 48, 168])
 
 
@@ -54,7 +55,6 @@ NEIMENG = MarketConfig(
         "wind_actual",
         "solar_actual",
     ],
-    test_start="2026-01-27",
 )
 
 CHONGQING = MarketConfig(
@@ -90,7 +90,6 @@ CHONGQING = MarketConfig(
         "trans_actual",
         "nonmarket_gen_actual",
     ],
-    test_start="2026-03-03",
 )
 
 JIANGSU = MarketConfig(
@@ -126,7 +125,6 @@ JIANGSU = MarketConfig(
         "wind_actual_江南",
         "receive_actual_huadong_华东",
     ],
-    test_start="2025-12-01",
 )
 
 MARKET_CONFIGS: Dict[str, MarketConfig] = {

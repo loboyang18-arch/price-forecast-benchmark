@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import warnings
 from pathlib import Path
 from typing import Any, Dict, Tuple
 
@@ -45,26 +46,29 @@ def run_experiment(
     df_15min: pd.DataFrame,
     cfg: MarketConfig,
     output_dir: Path,
+    test_start: str,
+    test_end: str,
 ) -> Dict[str, Any]:
     """完整实验：特征构建 → 切分 → 训练 → 预测 → 评估 → 保存。"""
     output_dir.mkdir(parents=True, exist_ok=True)
 
     feat = build_features(df_15min, cfg)
-    train_df, val_df, test_df = _split(feat, cfg)
+    train_df, val_df, test_df = _split(feat, test_start, test_end)
     model, importance = _train(train_df, val_df)
-    preds, metrics = _evaluate(model, test_df, cfg)
+    preds, metrics = _evaluate(model, test_df, cfg, test_start)
 
     _save_results(preds, metrics, importance, cfg, output_dir)
     return metrics
 
 
 def _split(
-    feat: pd.DataFrame, cfg: MarketConfig
+    feat: pd.DataFrame, test_start: str, test_end: str,
 ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """按 test_start 切分，val 从 train 末尾取 VAL_DAYS 天。"""
-    test_start = pd.Timestamp(cfg.test_start)
+    """按 test_start/test_end 切分，val 从 train 末尾取 VAL_DAYS 天。"""
+    test_start = pd.Timestamp(test_start)
+    test_end = pd.Timestamp(test_end) + pd.Timedelta(days=1)
     train_all = feat.loc[feat.index < test_start]
-    test_df = feat.loc[feat.index >= test_start]
+    test_df = feat.loc[(feat.index >= test_start) & (feat.index < test_end)]
 
     val_start = test_start - pd.Timedelta(days=VAL_DAYS)
     train_df = train_all.loc[train_all.index < val_start]
@@ -124,7 +128,8 @@ def _train(
 
 
 def _evaluate(
-    model: lgb.Booster, test_df: pd.DataFrame, cfg: MarketConfig
+    model: lgb.Booster, test_df: pd.DataFrame, cfg: MarketConfig,
+    test_start: str,
 ) -> Tuple[pd.DataFrame, Dict[str, Any]]:
     """Test 集预测 + 指标计算。"""
     X_test, y_test = _get_xy(test_df)
@@ -142,14 +147,16 @@ def _evaluate(
     mape = float(np.mean(np.abs((y_test[valid_mask] - y_pred[valid_mask]) / y_test[valid_mask]))) * 100
 
     by_date = preds.groupby(preds["ts"].dt.date)
-    daily_corrs = by_date.apply(lambda g: g["actual"].corr(g["predicted"]))
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", "invalid value encountered", RuntimeWarning)
+        daily_corrs = by_date.apply(lambda g: g["actual"].corr(g["predicted"]))
     profile_corr = float(daily_corrs.mean())
 
     metrics = {
         "market_id": cfg.market_id,
         "target_col": cfg.target_col,
         "algorithm": "LightGBM",
-        "test_start": cfg.test_start,
+        "test_start": test_start,
         "test_rows": int(len(y_test)),
         "mae": round(mae, 4),
         "rmse": round(rmse, 4),

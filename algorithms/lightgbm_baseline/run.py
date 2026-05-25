@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT))
 
 from pfbench.data import load_market_data
+from pfbench.market_config import get_market_split
 
 from algorithms.lightgbm_baseline.config import MARKET_CONFIGS
 from algorithms.lightgbm_baseline.train import run_experiment
@@ -59,17 +60,33 @@ def main() -> None:
             continue
 
         cfg = MARKET_CONFIGS[mid]
+        split = get_market_split(mid)
         out_dir = args.output_root / mid / "lightgbm"
         print(f"\n{'='*60}")
-        print(f"  {mid} → target={cfg.target_col}, test_start={cfg.test_start}")
+        print(f"  {mid} → target={cfg.target_col}, test_start={split.test_start}")
         print(f"{'='*60}")
 
         try:
             df, meta = load_market_data(mid)
-            metrics = run_experiment(df, cfg, out_dir)
+            metrics = run_experiment(
+                df, cfg, out_dir,
+                test_start=split.test_start, test_end=split.test_end,
+            )
             results.append(metrics)
             print(f"  MAE={metrics['mae']:.4f}  RMSE={metrics['rmse']:.4f}  "
                   f"MAPE={metrics['mape_pct']:.2f}%  ProfileCorr={metrics['profile_corr']:.4f}")
+
+            import pandas as pd
+            from pfbench.plotting import plot_weekly_predictions
+            pred_csv = out_dir / "test_predictions_hourly.csv"
+            if pred_csv.exists():
+                pred_df = pd.read_csv(pred_csv)
+                plot_dir = out_dir / "plots"
+                plots = plot_weekly_predictions(
+                    pred_df, plot_dir, mid, "LightGBM-Baseline",
+                    target_col=cfg.target_col,
+                )
+                print(f"  图表 → {plot_dir}/ ({len(plots)} 张)")
         except Exception as e:
             print(f"  FAIL: {e}")
             logging.exception("experiment failed for %s", mid)
