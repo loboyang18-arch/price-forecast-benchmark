@@ -17,6 +17,7 @@ import argparse
 import json
 import logging
 import sys
+import warnings
 from pathlib import Path
 from typing import Any, Dict
 
@@ -133,6 +134,15 @@ def run_single_market(
             print(f"    正常价时段 (y>{cfg.floor_price * 4}): "
                   f"MAE={tdf.loc[normal_mask, 'error'].mean():.1f} ({normal_mask.sum()} 样本)")
 
+    profile_corr = None
+    if all_preds is not None and len(all_preds) > 0:
+        by_date = all_preds.groupby("trade_date")
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", "invalid value encountered", RuntimeWarning)
+            daily_corrs = by_date.apply(lambda g: g["y"].corr(g["pred"]))
+        profile_corr = round(float(daily_corrs.mean()), 4)
+        print(f"    Profile Corr = {profile_corr:.4f}")
+
     results: Dict[str, Any] = {
         "market_id": market_id,
         "algorithm": "LightGBM-TwoStage",
@@ -144,6 +154,7 @@ def run_single_market(
         "mean_mae": round(mean_mae, 4),
         "mean_rmse": round(mean_rmse, 4),
         "mean_mape": round(mean_mape, 6),
+        "profile_corr": profile_corr,
         "mean_naive_mae": round(mean_naive_mae, 4) if mean_naive_mae else None,
         "baselines": baselines,
         "folds": folds,
