@@ -4,7 +4,7 @@
 用法：
   python algorithms/lightgbm_baseline/run.py --market all
   python algorithms/lightgbm_baseline/run.py --market neimeng
-  python algorithms/lightgbm_baseline/run.py --market neimeng,chongqing
+  python algorithms/lightgbm_baseline/run.py --market neimeng,chongqing --freq 15min
 """
 from __future__ import annotations
 
@@ -38,6 +38,10 @@ def main() -> None:
         help="市场 ID（逗号分隔）或 all",
     )
     ap.add_argument(
+        "--freq", choices=["1h", "15min"], default="1h",
+        help="预测粒度：1h（默认）或 15min",
+    )
+    ap.add_argument(
         "--output-root", type=Path,
         default=ROOT / "runs" / "predictions",
     )
@@ -61,9 +65,10 @@ def main() -> None:
 
         cfg = MARKET_CONFIGS[mid]
         split = get_market_split(mid)
-        out_dir = args.output_root / mid / "lightgbm"
+        algo_dir = "lightgbm_baseline_15min" if args.freq == "15min" else "lightgbm_baseline"
+        out_dir = args.output_root / mid / algo_dir
         print(f"\n{'='*60}")
-        print(f"  {mid} → target={cfg.target_col}, test_start={split.test_start}")
+        print(f"  {mid} [{args.freq}] → target={cfg.target_col}, test_start={split.test_start}")
         print(f"{'='*60}")
 
         try:
@@ -71,6 +76,7 @@ def main() -> None:
             metrics = run_experiment(
                 df, cfg, out_dir,
                 test_start=split.test_start, test_end=split.test_end,
+                freq=args.freq,
             )
             results.append(metrics)
             print(f"  MAE={metrics['mae']:.4f}  RMSE={metrics['rmse']:.4f}  "
@@ -78,13 +84,15 @@ def main() -> None:
 
             import pandas as pd
             from pfbench.plotting import plot_weekly_predictions
-            pred_csv = out_dir / "test_predictions_hourly.csv"
+            pred_fname = "test_predictions_15min.csv" if args.freq == "15min" else "test_predictions_hourly.csv"
+            pred_csv = out_dir / pred_fname
             if pred_csv.exists():
                 pred_df = pd.read_csv(pred_csv)
                 plot_dir = out_dir / "plots"
+                algo_label = "LightGBM-Baseline-15min" if args.freq == "15min" else "LightGBM-Baseline"
                 plots = plot_weekly_predictions(
-                    pred_df, plot_dir, mid, "LightGBM-Baseline",
-                    target_col=cfg.target_col,
+                    pred_df, plot_dir, mid, algo_label,
+                    target_col=cfg.target_col, freq=args.freq,
                 )
                 print(f"  图表 → {plot_dir}/ ({len(plots)} 张)")
         except Exception as e:

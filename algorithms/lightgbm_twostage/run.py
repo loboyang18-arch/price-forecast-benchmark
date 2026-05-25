@@ -3,13 +3,13 @@
 
 用法：
   # 全部市场，默认配置（Two-Stage + 后处理 + Expanding Window CV）
-  python algorithms/lgb_twostage/run.py --market all
+  python algorithms/lightgbm_twostage/run.py --market all
 
   # 单市场，启用分位数模式
-  python algorithms/lgb_twostage/run.py --market jiangsu --quantile
+  python algorithms/lightgbm_twostage/run.py --market jiangsu --quantile
 
   # 自定义参数
-  python algorithms/lgb_twostage/run.py --market neimeng --two-stage --time-decay 30 --top-k 80
+  python algorithms/lightgbm_twostage/run.py --market neimeng --two-stage --time-decay 30 --top-k 80
 """
 from __future__ import annotations
 
@@ -30,9 +30,9 @@ sys.path.insert(0, str(ROOT))
 from pfbench.data import load_market_data
 from pfbench.market_config import get_market_split
 
-from algorithms.lgb_twostage.config import MARKET_CONFIGS
-from algorithms.lgb_twostage.cv import CVConfig, compute_baselines, expanding_window_cv
-from algorithms.lgb_twostage.features import build_features
+from algorithms.lightgbm_twostage.config import MARKET_CONFIGS
+from algorithms.lightgbm_twostage.cv import CVConfig, compute_baselines, expanding_window_cv
+from algorithms.lightgbm_twostage.features import build_features
 
 
 def _setup_logging(verbose: bool) -> None:
@@ -45,23 +45,25 @@ def _setup_logging(verbose: bool) -> None:
 
 def run_single_market(
     market_id: str, mode: str, output_root: Path,
-    time_decay: int, top_k: int,
+    time_decay: int, top_k: int, freq: str = "1h",
 ) -> Dict[str, Any]:
     """运行单市场实验，返回汇总指标。"""
     cfg = MARKET_CONFIGS[market_id]
     split = get_market_split(market_id)
-    out_dir = output_root / market_id / "lgb_twostage"
+    algo_dir = "lightgbm_twostage_15min" if freq == "15min" else "lightgbm_twostage"
+    algo_label = "LightGBM-TwoStage-15min" if freq == "15min" else "LightGBM-TwoStage"
+    out_dir = output_root / market_id / algo_dir
     out_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"\n{'='*60}")
-    print(f"  {market_id} — LightGBM-TwoStage ({mode})")
+    print(f"  {market_id} — {algo_label} ({mode})")
     print(f"  target={cfg.target_col}, test_start={split.test_start} (from market yaml)")
     print(f"{'='*60}")
 
     df, meta = load_market_data(market_id)
     print(f"  数据加载: {len(df)} 行 (15min), {meta.get('time_range', 'N/A')}")
 
-    feat = build_features(df, cfg)
+    feat = build_features(df, cfg, freq=freq)
     x_cols = [c for c in feat.columns if c not in ("trade_date", "y")]
     print(f"  特征表: {len(feat)} 行 × {len(x_cols)} 特征, {feat['trade_date'].nunique()} 交易日")
     print(f"  特征前10: {x_cols[:10]}...")
@@ -145,8 +147,9 @@ def run_single_market(
 
     results: Dict[str, Any] = {
         "market_id": market_id,
-        "algorithm": "LightGBM-TwoStage",
+        "algorithm": algo_label,
         "mode": mode,
+        "freq": freq,
         "target_col": cfg.target_col,
         "feature_count": len(x_cols),
         "n_dates": int(feat["trade_date"].nunique()),
@@ -169,17 +172,28 @@ def run_single_market(
 
     if all_preds is not None:
         all_preds_out = all_preds.copy()
-        all_preds_out["ts"] = pd.to_datetime(all_preds_out["trade_date"]) + pd.to_timedelta(all_preds_out["hour"], unit="h")
+        if freq == "15min":
+            all_preds_out["ts"] = (
+                pd.to_datetime(all_preds_out["trade_date"])
+                + pd.to_timedelta(all_preds_out["step"] * 15, unit="m")
+            )
+            pred_fname = "test_predictions_15min.csv"
+        else:
+            all_preds_out["ts"] = (
+                pd.to_datetime(all_preds_out["trade_date"])
+                + pd.to_timedelta(all_preds_out["hour"], unit="h")
+            )
+            pred_fname = "test_predictions_hourly.csv"
         all_preds_out = all_preds_out.rename(columns={"y": "actual", "pred": "predicted"})
-        pred_path = out_dir / "test_predictions_hourly.csv"
+        pred_path = out_dir / pred_fname
         all_preds_out[["ts", "actual", "predicted"]].to_csv(pred_path, index=False)
         print(f"  Predictions (全量CV) → {pred_path}")
 
         from pfbench.plotting import plot_weekly_predictions
         plot_dir = out_dir / "plots"
         plots = plot_weekly_predictions(
-            all_preds_out, plot_dir, market_id, "LightGBM-TwoStage",
-            target_col=cfg.target_col,
+            all_preds_out, plot_dir, market_id, algo_label,
+            target_col=cfg.target_col, freq=freq,
         )
         print(f"  图表 → {plot_dir}/ ({len(plots)} 张)")
 
@@ -204,6 +218,8 @@ def run_single_market(
 def main() -> None:
     ap = argparse.ArgumentParser(description="LightGBM-TwoStage 实验")
     ap.add_argument("--market", "-m", default="all", help="市场 ID（逗号分隔）或 all")
+    ap.add_argument("--freq", choices=["1h", "15min"], default="1h",
+                    help="预测粒度：1h（默认）或 15min")
     ap.add_argument("--output-root", type=Path, default=ROOT / "runs" / "predictions")
     ap.add_argument("--mode", choices=["regression", "two_stage", "quantile", "quantile_two_stage"],
                     default="two_stage", help="建模模式")
@@ -227,7 +243,10 @@ def main() -> None:
             failed.append(mid)
             continue
         try:
-            r = run_single_market(mid, args.mode, args.output_root, args.time_decay, args.top_k)
+            r = run_single_market(
+                mid, args.mode, args.output_root,
+                args.time_decay, args.top_k, freq=args.freq,
+            )
             all_results.append(r)
         except Exception as e:
             print(f"  FAIL: {e}")

@@ -48,16 +48,20 @@ def run_experiment(
     output_dir: Path,
     test_start: str,
     test_end: str,
+    freq: str = "1h",
 ) -> Dict[str, Any]:
-    """完整实验：特征构建 → 切分 → 训练 → 预测 → 评估 → 保存。"""
+    """完整实验：特征构建 → 切分 → 训练 → 预测 → 评估 → 保存。
+
+    freq: "1h" 或 "15min"，决定特征粒度与预测粒度。
+    """
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    feat = build_features(df_15min, cfg)
+    feat = build_features(df_15min, cfg, freq=freq)
     train_df, val_df, test_df = _split(feat, test_start, test_end)
     model, importance = _train(train_df, val_df)
-    preds, metrics = _evaluate(model, test_df, cfg, test_start)
+    preds, metrics = _evaluate(model, test_df, cfg, test_start, freq)
 
-    _save_results(preds, metrics, importance, cfg, output_dir)
+    _save_results(preds, metrics, importance, cfg, output_dir, freq)
     return metrics
 
 
@@ -129,7 +133,7 @@ def _train(
 
 def _evaluate(
     model: lgb.Booster, test_df: pd.DataFrame, cfg: MarketConfig,
-    test_start: str,
+    test_start: str, freq: str,
 ) -> Tuple[pd.DataFrame, Dict[str, Any]]:
     """Test 集预测 + 指标计算。"""
     X_test, y_test = _get_xy(test_df)
@@ -156,6 +160,7 @@ def _evaluate(
         "market_id": cfg.market_id,
         "target_col": cfg.target_col,
         "algorithm": "LightGBM",
+        "freq": freq,
         "test_start": test_start,
         "test_rows": int(len(y_test)),
         "mae": round(mae, 4),
@@ -179,9 +184,11 @@ def _save_results(
     importance: pd.DataFrame,
     cfg: MarketConfig,
     output_dir: Path,
+    freq: str,
 ) -> None:
     """保存预测结果、指标、特征重要性。"""
-    preds.to_csv(output_dir / "test_predictions_hourly.csv", index=False)
+    fname = "test_predictions_15min.csv" if freq == "15min" else "test_predictions_hourly.csv"
+    preds.to_csv(output_dir / fname, index=False)
     (output_dir / "metrics.json").write_text(
         json.dumps(metrics, ensure_ascii=False, indent=2), encoding="utf-8",
     )

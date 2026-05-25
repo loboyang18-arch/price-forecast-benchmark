@@ -71,6 +71,9 @@ def expanding_window_cv(
     Returns (fold_results, last_model_payload, last_fold_test_df, all_preds).
     """
     params = {**(cv.params or {})}
+    if "step" not in feat.columns:
+        feat = feat.copy()
+        feat["step"] = feat["hour"].astype(int)
     dates = sorted(feat["trade_date"].unique())
 
     test_start_ts = pd.Timestamp(test_start)
@@ -90,6 +93,7 @@ def expanding_window_cv(
     date_set = set(dates)
     feat = feat.loc[feat["trade_date"].isin(date_set)].copy()
 
+    x_cols = [c for c in x_cols if c != "step"]
     min_train_for_select = max(30, test_start_idx - cv.val_days)
     if cv.feature_select_top_k > 0 and cv.feature_select_top_k < len(x_cols):
         x_cols = select_top_k_features(
@@ -221,19 +225,19 @@ def expanding_window_cv(
                 pred_val = apply_adaptive_naive_blend(pred_val, naive_val_arr, naive_blend_alpha)
                 pred_test = apply_adaptive_naive_blend(pred_test, naive_test_arr, naive_blend_alpha)
 
-        # ── 后处理：残差校正 ──
+        # ── 后处理：残差校正（按 step 分组，对粒度通用） ──
         residual_gamma = 0.0
         residual_bias: Dict[int, float] = {}
         if cv.residual_correction and pred_val is not None:
-            hh_val = feat.loc[val_mask, "hour"].values
-            hh_test = feat.loc[test_mask, "hour"].values
+            hh_val = feat.loc[val_mask, "step"].values
+            hh_test = feat.loc[test_mask, "step"].values
             residual_gamma, residual_bias = tune_residual_gamma(pred_val, y_val, hh_val)
             if residual_gamma > 0:
                 pred_test = apply_residual_correction(pred_test, hh_test, residual_bias, residual_gamma)
 
         test_metrics = evaluate(y_test, pred_test)
 
-        test_df = feat.loc[test_mask, ["trade_date", "hour", "y"]].copy()
+        test_df = feat.loc[test_mask, ["trade_date", "hour", "step", "y"]].copy()
         test_df["pred"] = pred_test
         if cv.quantile_mode and q_test_preds is not None:
             for alpha in QUANTILES:
@@ -292,8 +296,8 @@ def expanding_window_cv(
 
     all_preds = (
         pd.concat(all_test_dfs, ignore_index=True)
-        .drop_duplicates(subset=["trade_date", "hour"], keep="last")
-        .sort_values(["trade_date", "hour"])
+        .drop_duplicates(subset=["trade_date", "step"], keep="last")
+        .sort_values(["trade_date", "step"])
         .reset_index(drop=True)
     ) if all_test_dfs else None
 
@@ -303,22 +307,25 @@ def expanding_window_cv(
 def _get_naive(
     feat: pd.DataFrame, all_dates: List, target_dates: List,
 ) -> np.ndarray:
-    """构建 naive baseline（昨日同时段）。"""
+    """构建 naive baseline（昨日同时段，按 step 索引）。"""
     naive_vals = []
     for td in target_dates:
         td_idx = list(all_dates).index(td)
-        cur = feat.loc[feat["trade_date"] == td].sort_values("hour")
+        cur = feat.loc[feat["trade_date"] == td].sort_values("step")
         if td_idx > 0:
             prev_d = all_dates[td_idx - 1]
-            prev = feat.loc[feat["trade_date"] == prev_d, ["hour", "y"]].set_index("hour")["y"]
-            naive_vals.extend(cur["hour"].map(prev).values)
+            prev = feat.loc[feat["trade_date"] == prev_d, ["step", "y"]].set_index("step")["y"]
+            naive_vals.extend(cur["step"].map(prev).values)
         else:
             naive_vals.extend([np.nan] * len(cur))
     return np.array(naive_vals, dtype=float)
 
 
 def compute_baselines(feat: pd.DataFrame, test_start: str, test_end: str) -> Dict:
-    """Naive baselines: 昨日同时段 + 上周同时段（test_start ~ test_end）。"""
+    """Naive baselines: 昨日同时段 + 上周同时段（test_start ~ test_end，按 step 索引）。"""
+    if "step" not in feat.columns:
+        feat = feat.copy()
+        feat["step"] = feat["hour"].astype(int)
     dates = sorted(feat["trade_date"].unique())
     ts_start = pd.Timestamp(test_start)
     ts_end = pd.Timestamp(test_end)
@@ -331,23 +338,23 @@ def compute_baselines(feat: pd.DataFrame, test_start: str, test_end: str) -> Dic
     naive_week_records = []
     for td in test_dates:
         td_idx = list(dates).index(td)
-        cur = feat.loc[feat["trade_date"] == td, ["hour", "y"]].copy()
+        cur = feat.loc[feat["trade_date"] == td, ["step", "y"]].copy()
 
         if td_idx > 0:
             prev_d = dates[td_idx - 1]
             prev_vals = feat.loc[
-                feat["trade_date"] == prev_d, ["hour", "y"]
-            ].set_index("hour")["y"]
-            cur["naive_prev"] = cur["hour"].map(prev_vals)
+                feat["trade_date"] == prev_d, ["step", "y"]
+            ].set_index("step")["y"]
+            cur["naive_prev"] = cur["step"].map(prev_vals)
             naive_records.append(cur)
 
         if td_idx >= 7:
             prev_w = dates[td_idx - 7]
             prev_w_vals = feat.loc[
-                feat["trade_date"] == prev_w, ["hour", "y"]
-            ].set_index("hour")["y"]
+                feat["trade_date"] == prev_w, ["step", "y"]
+            ].set_index("step")["y"]
             cur_w = cur.copy()
-            cur_w["naive_week"] = cur_w["hour"].map(prev_w_vals)
+            cur_w["naive_week"] = cur_w["step"].map(prev_w_vals)
             naive_week_records.append(cur_w)
 
     if naive_records:

@@ -71,6 +71,7 @@ def plot_weekly_predictions(
     algorithm: str,
     target_col: str = "",
     naive_col: Optional[str] = None,
+    freq: str = "1h",
 ) -> List[Path]:
     """按周绘制预测 vs 真实，每周一张图包含逐日子图。
 
@@ -81,6 +82,7 @@ def plot_weekly_predictions(
         algorithm: 算法名称
         target_col: 目标列名（显示在标题中）
         naive_col: 如有 naive 列名，也会绘制
+        freq: "1h" 或 "15min"，决定 x 轴刻度与 marker 密度
 
     Returns:
         生成的图表文件路径列表
@@ -102,6 +104,8 @@ def plot_weekly_predictions(
     week_groups = list(df.groupby(["year", "week"], sort=True))
 
     saved: List[Path] = []
+    is_15min = freq == "15min"
+    marker_size = 2 if is_15min else 3
 
     for (yr, wk), wdf in week_groups:
         dates_in_week = sorted(wdf["date"].unique())
@@ -120,22 +124,27 @@ def plot_weekly_predictions(
         for idx, d in enumerate(dates_in_week):
             ax = axes[idx, 0]
             day = wdf[wdf["date"] == d].sort_values("ts")
-            hours = day["ts"].dt.hour.values
+            if is_15min:
+                x_vals = day["ts"].dt.hour.values + day["ts"].dt.minute.values / 60.0
+            else:
+                x_vals = day["ts"].dt.hour.values
             y_true = day["actual"].values
             y_pred = day["predicted"].values
             day_mae = np.mean(np.abs(y_true - y_pred))
 
-            ax.plot(hours, y_true, color=COLORS["actual"], linewidth=1.8,
-                    marker="o", markersize=3, label="真实", zorder=3)
-            ax.plot(hours, y_pred, color=COLORS["predicted"], linewidth=1.8,
-                    linestyle="--", marker="s", markersize=3, label="预测", zorder=3)
+            ax.plot(x_vals, y_true, color=COLORS["actual"], linewidth=1.5,
+                    marker="o", markersize=marker_size, label="真实", zorder=3)
+            ax.plot(x_vals, y_pred, color=COLORS["predicted"], linewidth=1.5,
+                    linestyle="--", marker="s", markersize=marker_size, label="预测", zorder=3)
 
             if naive_col and naive_col in day.columns:
                 y_naive = day[naive_col].values
-                ax.plot(hours, y_naive, color=COLORS["naive"], linewidth=1.0,
+                ax.plot(x_vals, y_naive, color=COLORS["naive"], linewidth=1.0,
                         linestyle=":", alpha=0.7, label="Naive")
 
-            ax.set_title(f"{d}  (MAE={day_mae:.1f})", fontsize=10, loc="left")
+            granularity_label = "(15min)" if is_15min else "(hourly)"
+            ax.set_title(f"{d} {granularity_label}  (MAE={day_mae:.1f})",
+                         fontsize=10, loc="left")
             ax.set_xlabel("小时")
             ax.set_ylabel("价格")
             ax.set_xticks(range(0, 24, 2))
