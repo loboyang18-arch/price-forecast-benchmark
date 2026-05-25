@@ -53,17 +53,41 @@
 
 ## 二、DL — 基于原始特征的深度学习方法
 
-| 算法 | 说明 | 源工程 | 源文件 |
-|------|------|--------|--------|
-| **Conv2D-MultiTask** | Conv2D 多任务网络。输入原始特征矩阵 (C×4×7)，通过 3 层 Conv2D + BatchNorm + MaxPool 提取时空模式，多节点/多目标联合学习。 | neimeng_prj | `src/model_v8_multitask.py` |
-| **Transformer-Joint24h** | Pure Transformer 全日联合预测。每小时原始特征 (C×4×7) 展平后 Linear 投影，经 Transformer Encoder 建模 24 小时间依赖关系，联合输出全天价格预测。 | neimeng_prj | `src/model_v10_joint.py` |
-| **Transformer-Quantile** | 基于 Transformer-Joint24h 的分位数版本。输出每小时 5 个分位数（P10/P30/P50/P70/P90），使用 Pinball Loss 训练，可用于下游鲁棒优化。 | neimeng_prj | `src/model_v10_quantile.py` |
-| **ResConv2D** | 10 层残差 Conv2D 网络（ResBlock + GELU）。双头架构：价格回归头 + 涨跌方向头。跨市场同构设计（内蒙/重庆共享网络结构）。 | neimeng_prj / chongqing_prj | `src/model_v25_resconv.py` |
+| 算法 | 说明 | 本工程实现 | 源工程 | 源文件 |
+|------|------|-----------|--------|--------|
+| **Conv2D-MultiTask** | Conv2D 多任务网络。输入 (C, H_SLOTS, 7) 张量，3 层 Conv2D + BN + GELU + MaxPool 提取时空模式，回归头（L1）+ 方向分类头（CE，λ=0.3）联合学习。 | `algorithms/conv2d_multitask/` | neimeng_prj | `src/model_v8_multitask.py` |
+| **Transformer-Joint24h** | Pure Transformer 全日联合预测。每小时原始特征 (C×4×7) 展平后 Linear 投影，经 Transformer Encoder 建模 24 小时间依赖关系，联合输出全天价格预测。 | 待移植 | neimeng_prj | `src/model_v10_joint.py` |
+| **Transformer-Quantile** | 基于 Transformer-Joint24h 的分位数版本。输出每小时 5 个分位数（P10/P30/P50/P70/P90），使用 Pinball Loss 训练，可用于下游鲁棒优化。 | 待移植 | neimeng_prj | `src/model_v10_quantile.py` |
+| **ResConv2D** | 10 层残差 Conv2D 网络（ResBlock + GELU）。双头架构：价格回归头 + 涨跌方向头。跨市场同构设计（内蒙/重庆共享网络结构）。 | 待移植 | neimeng_prj / chongqing_prj | `src/model_v25_resconv.py` |
 
 **共同特点：**
 - 输入为原始特征矩阵（多通道×时段×回看天数），不做手工特征工程
 - 全日联合输出（24h 或 96×15min），利用时段间相关性
 - PyTorch 实现，GPU 训练
+
+**Conv2D-MultiTask 三市场结果（固定 train/test，1h vs 15min，80 epochs，RTX 4090）：**
+
+| 市场 | 粒度 | C / H_SLOTS | 训练样本 | MAE | RMSE | Profile Corr | Dir Acc |
+|------|------|-------------|----------|-----|------|--------------|---------|
+| 内蒙 | 1h | 21 / 12 | 8736 | 100.65 | 134.98 | 0.7714 | 0.544 |
+| 内蒙 | 15min | 21 / 12 | 34944 | 103.74 | 141.43 | 0.7584 | 0.861 |
+| 重庆 | 1h | 21 / 12 | 2568 | **90.57** | 165.10 | 0.2053 | 0.504 |
+| 重庆 | 15min | 21 / 12 | 10272 | **90.87** | 172.55 | 0.0161 | 0.397 |
+| 江苏 | 1h | 24 / 12 | 1104 | 88.25 | 113.59 | 0.7257 | 0.617 |
+| 江苏 | 15min | 24 / 12 | 4416 | 93.28 | 121.97 | 0.6834 | 0.475 |
+
+**三算法横向比较（MAE，单位 元/MWh）：**
+
+| 市场 | 粒度 | Baseline | TwoStage | Conv2D | 最优 |
+|------|------|----------|----------|--------|------|
+| 内蒙 | 1h | 98.51 | **82.76** | 100.65 | TwoStage |
+| 内蒙 | 15min | 108.66 | **92.52** | 103.74 | TwoStage |
+| 重庆 | 1h | 94.93 | 110.47 | **90.57** | Conv2D (−4.6% vs Baseline) |
+| 重庆 | 15min | 95.64 | 109.69 | **90.87** | Conv2D (−5.0% vs Baseline) |
+| 江苏 | 1h | 82.60 | **53.36** | 88.25 | TwoStage |
+| 江苏 | 15min | 88.43 | **54.66** | 93.28 | TwoStage |
+
+> **重庆是 Conv2D 唯一显著胜出的市场**：训练集仅 ~115 天，对 TwoStage 的 170+ 特征体系数据不足；Conv2D 端到端学时空模式对小样本更鲁棒。其他两市场详细对比与训练观察见 `RESULTS.md` §3.3 / §4.3。
 
 ## 三、暂不纳入验证
 
@@ -84,7 +108,7 @@
 |------|---------------------|----------------------|---------------------|--------|
 | LightGBM-Baseline | — | — | realtime_v3 / v4 / v6 | `algorithms/lightgbm_baseline/` |
 | LightGBM-TwoStage | — | — | dayahead_v7_residual | `algorithms/lightgbm_twostage/` |
-| Conv2D-MultiTask | v8.0 系列 | — | — | 待移植 |
+| Conv2D-MultiTask | v8.0 系列 | — | — | `algorithms/conv2d_multitask/` |
 | Transformer-Joint24h | v10.0-joint | — | — | 待移植 |
 | Transformer-Quantile | v10.0-quantile | — | — | 待移植 |
 | ResConv2D | v25 系列 | v25_deep_nm_only_sudun | — | 待移植 |
