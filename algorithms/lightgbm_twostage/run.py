@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """LightGBM-TwoStage — CLI 入口。
 
-用法：
-  # 全部市场，默认配置（Two-Stage + 后处理 + Expanding Window CV）
+用法（2026-05-26 起改为单次训练-预测，与 `lightgbm_baseline` / `conv2d_multitask` 口径对齐）：
+  # 全部市场，默认配置（Two-Stage + 后处理）
   python algorithms/lightgbm_twostage/run.py --market all
 
   # 单市场，启用分位数模式
-  python algorithms/lightgbm_twostage/run.py --market jiangsu --quantile
+  python algorithms/lightgbm_twostage/run.py --market jiangsu --mode quantile
 
   # 自定义参数
-  python algorithms/lightgbm_twostage/run.py --market neimeng --two-stage --time-decay 30 --top-k 80
+  python algorithms/lightgbm_twostage/run.py --market neimeng --mode two_stage --time-decay 30 --top-k 80
 """
 from __future__ import annotations
 
@@ -17,22 +17,25 @@ import argparse
 import json
 import logging
 import sys
-import warnings
 from pathlib import Path
 from typing import Any, Dict
 
-import numpy as np
 import pandas as pd
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT))
 
 from pfbench.data import load_market_data
+from pfbench.exp_meta import make_experiment_id, save_config_snapshot
 from pfbench.feature_registry import FeatureSpec, resolve_columns
 from pfbench.market_config import get_market_split
 
 from algorithms.lightgbm_twostage.config import MarketConfig
-from algorithms.lightgbm_twostage.cv import CVConfig, compute_baselines, expanding_window_cv
+from algorithms.lightgbm_twostage.cv import (
+    TrainConfig,
+    compute_baselines,
+    single_pass_predict,
+)
 from algorithms.lightgbm_twostage.features import build_features
 
 SUPPORTED_MARKETS = ["neimeng", "chongqing", "jiangsu"]
@@ -60,6 +63,17 @@ def run_single_market(
     algo_label = "LightGBM-TwoStage-15min" if freq == "15min" else "LightGBM-TwoStage"
     out_dir = output_root / market_id / algo_dir
     out_dir.mkdir(parents=True, exist_ok=True)
+    exp_id = make_experiment_id(market_id, algo_dir, target=cfg.target_col)
+    save_config_snapshot(
+        out_dir, exp_id,
+        algorithm="lightgbm_twostage",
+        market=market_id, target=cfg.target_col, freq=freq,
+        extra={
+            "feature_groups": {n: len(g.cols) for n, g in resolved.groups.items()},
+            "test_start": str(split.test_start),
+            "test_end": str(split.test_end),
+        },
+    )
 
     print(f"\n{'='*60}")
     print(f"  {market_id} — {algo_label} ({mode})")
@@ -80,10 +94,8 @@ def run_single_market(
     if len(high_nan) > 0:
         print(f"  ⚠ 高 NaN 特征: {dict(high_nan.round(3))}")
 
-    cv = CVConfig(
+    tc = TrainConfig(
         val_days=cfg.val_days,
-        test_days=cfg.step_days,
-        step_days=cfg.step_days,
         two_stage=(mode == "two_stage"),
         quantile_mode=(mode == "quantile"),
         quantile_two_stage=(mode == "quantile_two_stage"),
@@ -94,45 +106,38 @@ def run_single_market(
         residual_correction=True,
     )
 
-    print(f"\n  Expanding Window CV: test_start={split.test_start}, "
-          f"val={cv.val_days}d, test={cv.test_days}d, step={cv.step_days}d")
-    if cv.two_stage:
+    print(f"\n  Single train-predict: test_start={split.test_start}, val={tc.val_days}d")
+    if tc.two_stage:
         print(f"  Two-Stage: floor_price={cfg.floor_price}")
-    if cv.quantile_mode:
+    if tc.quantile_mode:
         print(f"  Quantile mode: {[0.10, 0.25, 0.50, 0.75, 0.90]}")
-    if cv.time_decay_half_life > 0:
-        print(f"  Time decay: half_life={cv.time_decay_half_life}d")
-    if cv.feature_select_top_k > 0:
-        print(f"  Feature selection: top-{cv.feature_select_top_k}")
+    if tc.time_decay_half_life > 0:
+        print(f"  Time decay: half_life={tc.time_decay_half_life}d")
+    if tc.feature_select_top_k > 0:
+        print(f"  Feature selection: top-{tc.feature_select_top_k}")
 
-    folds, last_payload, last_test_df, all_preds = expanding_window_cv(
-        feat, cfg, cv,
+    info, last_payload, all_preds = single_pass_predict(
+        feat, cfg, tc,
         test_start=split.test_start, test_end=split.test_end,
     )
 
-    if not folds:
-        raise RuntimeError(f"No valid CV folds for {market_id}")
-
-    mean_mae = np.mean([f["test"]["mae"] for f in folds])
-    mean_rmse = np.mean([f["test"]["rmse"] for f in folds])
-    mean_mape = np.mean([f["test"]["mape"] for f in folds])
-    naive_maes = [f["naive_yesterday"]["mae"] for f in folds if f.get("naive_yesterday")]
-    mean_naive_mae = float(np.mean(naive_maes)) if naive_maes else None
-
     print(f"\n  {'─'*40}")
-    print(f"  CV Results ({len(folds)} folds):")
-    print(f"    Model MAE  = {mean_mae:.2f}")
-    print(f"    Model RMSE = {mean_rmse:.2f}")
-    print(f"    Model MAPE = {mean_mape:.4f}")
-    if mean_naive_mae is not None:
-        improv = (mean_naive_mae - mean_mae) / mean_naive_mae * 100
-        print(f"    Naive MAE  = {mean_naive_mae:.2f} (yesterday same hour)")
-        print(f"    Improvement = {improv:+.1f}%")
+    print(f"  Single-pass Results:")
+    print(f"    Model MAE  = {info['mae']:.2f}")
+    print(f"    Model RMSE = {info['rmse']:.2f}")
+    print(f"    Model MAPE = {info['mape']:.4f}")
+    if info.get("profile_corr") is not None:
+        print(f"    Profile Corr = {info['profile_corr']:.4f}")
+    if info.get("naive_yesterday"):
+        n_mae = info["naive_yesterday"]["mae"]
+        improv = (n_mae - info["mae"]) / n_mae * 100
+        print(f"    Naive MAE  = {n_mae:.2f} (yesterday same hour, internal)")
+        print(f"    Improvement vs naive = {improv:+.1f}%")
 
     baselines = compute_baselines(feat, split.test_start, split.test_end)
 
-    if last_test_df is not None:
-        tdf = last_test_df.copy()
+    if all_preds is not None:
+        tdf = all_preds.copy()
         tdf["error"] = (tdf["pred"] - tdf["y"]).abs()
         floor_mask = tdf["y"] <= cfg.floor_price
         normal_mask = tdf["y"] > cfg.floor_price * 4
@@ -143,41 +148,39 @@ def run_single_market(
             print(f"    正常价时段 (y>{cfg.floor_price * 4}): "
                   f"MAE={tdf.loc[normal_mask, 'error'].mean():.1f} ({normal_mask.sum()} 样本)")
 
-    profile_corr = None
-    if all_preds is not None and len(all_preds) > 0:
-        by_date = all_preds.groupby("trade_date")
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", "invalid value encountered", RuntimeWarning)
-            daily_corrs = by_date.apply(lambda g: g["y"].corr(g["pred"]))
-        profile_corr = round(float(daily_corrs.mean()), 4)
-        print(f"    Profile Corr = {profile_corr:.4f}")
-
     results: Dict[str, Any] = {
+        "experiment_id": exp_id,
         "market_id": market_id,
         "algorithm": algo_label,
         "mode": mode,
         "freq": freq,
         "target_col": cfg.target_col,
         "feature_spec": resolved.to_dict(),
-        "feature_count": len(x_cols),
+        "feature_count": info["feature_count"],
         "n_dates": int(feat["trade_date"].nunique()),
-        "cv_folds": len(folds),
-        "mean_mae": round(mean_mae, 4),
-        "mean_rmse": round(mean_rmse, 4),
-        "mean_mape": round(mean_mape, 6),
-        "profile_corr": profile_corr,
-        "mean_naive_mae": round(mean_naive_mae, 4) if mean_naive_mae else None,
+        "n_train_samples": info["n_train_samples"],
+        "n_val_samples": info["n_val_samples"],
+        "n_test_samples": info["n_test_samples"],
+        "train_days": info["train_days"],
+        "val_days": info["val_days"],
+        "test_days": info["test_days"],
+        "test_date_start": info["test_date_start"],
+        "test_date_end": info["test_date_end"],
+        "mae": info["mae"],
+        "rmse": info["rmse"],
+        "mape": info["mape"],
+        "profile_corr": info.get("profile_corr"),
+        "naive_yesterday": info.get("naive_yesterday"),
+        "floor_pred_value": info.get("floor_pred_value"),
+        "naive_blend_alpha": info.get("naive_blend_alpha"),
+        "residual_gamma": info.get("residual_gamma"),
         "baselines": baselines,
-        "folds": folds,
     }
+    for k in ("floor_threshold", "floor_actual", "floor_pred_count", "quantile_params"):
+        if k in info:
+            results[k] = info[k]
 
-    metrics_path = out_dir / "metrics.json"
-    metrics_path.write_text(
-        json.dumps(results, ensure_ascii=False, indent=2, default=str),
-        encoding="utf-8",
-    )
-    print(f"\n  Metrics → {metrics_path}")
-
+    pred_path = None
     if all_preds is not None:
         all_preds_out = all_preds.copy()
         if freq == "15min":
@@ -195,7 +198,24 @@ def run_single_market(
         all_preds_out = all_preds_out.rename(columns={"y": "actual", "pred": "predicted"})
         pred_path = out_dir / pred_fname
         all_preds_out[["ts", "actual", "predicted"]].to_csv(pred_path, index=False)
-        print(f"  Predictions (全量CV) → {pred_path}")
+        print(f"  Predictions → {pred_path}")
+
+    if pred_path is not None and pred_path.exists():
+        try:
+            from pfbench.metrics import evaluate_predictions_csv
+            results["extended_metrics"] = evaluate_predictions_csv(pred_path)
+        except Exception as exc:
+            print(f"  WARN extended_metrics 计算失败: {exc}")
+            results["extended_metrics"] = None
+
+    metrics_path = out_dir / "metrics.json"
+    metrics_path.write_text(
+        json.dumps(results, ensure_ascii=False, indent=2, default=str),
+        encoding="utf-8",
+    )
+    print(f"\n  Metrics → {metrics_path}")
+
+    if all_preds is not None:
 
         from pfbench.plotting import plot_weekly_predictions
         plot_dir = out_dir / "plots"
@@ -274,9 +294,12 @@ def main() -> None:
     print("汇总:")
     print(f"{'='*70}")
     for r in all_results:
-        naive_str = f"  Naive={r['mean_naive_mae']:.2f}" if r.get("mean_naive_mae") else ""
-        print(f"  {r['market_id']:12s}  MAE={r['mean_mae']:8.2f}  "
-              f"RMSE={r['mean_rmse']:8.2f}  MAPE={r['mean_mape']:.4f}{naive_str}")
+        n = r.get("naive_yesterday") or {}
+        naive_str = f"  Naive={n['mae']:.2f}" if n else ""
+        corr = r.get("profile_corr")
+        corr_str = f"  Corr={corr:.4f}" if corr is not None else ""
+        print(f"  {r['market_id']:12s}  MAE={r['mae']:8.2f}  "
+              f"RMSE={r['rmse']:8.2f}  MAPE={r['mape']:.4f}{corr_str}{naive_str}")
     if failed:
         print(f"\n失败: {failed}")
         sys.exit(1)

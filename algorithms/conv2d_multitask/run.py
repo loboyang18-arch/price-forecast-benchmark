@@ -20,8 +20,10 @@ ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT))
 
 from pfbench.data import load_market_data
+from pfbench.exp_meta import make_experiment_id, save_config_snapshot
 from pfbench.feature_registry import FeatureSpec, load_feature_registry
 from pfbench.market_config import get_market_split
+from pfbench.metrics import evaluate_predictions_csv
 from pfbench.plotting import plot_weekly_predictions
 
 from algorithms.conv2d_multitask.train import (
@@ -47,19 +49,42 @@ def run_single_market(
     epochs: int, batch_size: int, lr: float, val_days: int,
     target: str = None,
     groups: list = None,
+    early_stop: bool = False,
+    patience: int = 10,
+    restore_best: bool = True,
+    output_suffix: str = None,
 ) -> dict:
     reg = load_feature_registry(market_id)
     split = get_market_split(market_id)
     test_start = pd.Timestamp(split.test_start)
     test_end = pd.Timestamp(split.test_end)
     algo_dir = "conv2d_multitask_15min" if freq == "15min" else "conv2d_multitask"
+    if output_suffix:
+        algo_dir = f"{algo_dir}_{output_suffix}"
     out_dir = output_root / market_id / algo_dir
     out_dir.mkdir(parents=True, exist_ok=True)
     spec = FeatureSpec(target=target, groups=groups)
+    resolved_target = target or reg.target_default
+    exp_id = make_experiment_id(market_id, algo_dir, target=resolved_target)
+    save_config_snapshot(
+        out_dir, exp_id,
+        algorithm="conv2d_multitask",
+        market=market_id, target=resolved_target, freq=freq,
+        extra={
+            "epochs": epochs, "batch_size": batch_size, "lr": lr,
+            "val_days": val_days,
+            "early_stop": early_stop, "patience": patience,
+            "restore_best": restore_best,
+            "test_start": str(test_start.date()),
+            "test_end": str(test_end.date()),
+        },
+    )
     print(f"\n{'=' * 60}")
     print(f"  {market_id} [{freq}] → target={target or reg.target_default}")
     print(f"  test_start={test_start.date()}  test_end={test_end.date()}")
     print(f"  out_dir={out_dir}")
+    if early_stop:
+        print(f"  early_stop=ON  patience={patience}  restore_best={restore_best}")
     print(f"{'=' * 60}")
 
     df, meta = load_market_data(market_id)
@@ -68,6 +93,7 @@ def run_single_market(
         freq=freq, spec=spec,
         epochs=epochs, batch_size=batch_size, lr=lr,
         val_days=val_days,
+        early_stop=early_stop, patience=patience, restore_best=restore_best,
     )
 
     metrics = result["metrics"]
@@ -76,6 +102,13 @@ def run_single_market(
     pred_fname = "test_predictions_15min.csv" if freq == "15min" else "test_predictions_hourly.csv"
     pred_csv = out_dir / pred_fname
     pred_df.to_csv(pred_csv, index=False)
+
+    try:
+        metrics["extended_metrics"] = evaluate_predictions_csv(pred_csv)
+    except Exception as exc:
+        logging.warning("extended_metrics 计算失败: %s", exc)
+        metrics["extended_metrics"] = None
+    metrics["experiment_id"] = exp_id
 
     with open(out_dir / "metrics.json", "w") as f:
         json.dump(metrics, f, ensure_ascii=False, indent=2)
@@ -125,6 +158,15 @@ def main() -> None:
                     help="从训练集末尾切出多少天做 val")
     ap.add_argument("--output-root", type=Path,
                     default=ROOT / "runs" / "predictions")
+    ap.add_argument("--early-stop", action="store_true",
+                    help="启用基于 val_mae 的早停（默认关闭，保持向后兼容）")
+    ap.add_argument("--patience", type=int, default=10,
+                    help="早停 patience（仅在 --early-stop 时生效）")
+    ap.add_argument("--no-restore-best", action="store_true",
+                    help="不恢复 best-val 权重（仅在 --early-stop 时生效）")
+    ap.add_argument("--output-suffix", default=None,
+                    help="输出目录后缀（如 'es'→conv2d_multitask_es/）。"
+                         "未指定时启用 --early-stop 自动用 'es'")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()
 
@@ -139,6 +181,10 @@ def main() -> None:
     if args.groups:
         groups = [g.strip() for g in args.groups.split(",") if g.strip()]
 
+    output_suffix = args.output_suffix
+    if args.early_stop and not output_suffix:
+        output_suffix = "es"
+
     failed = []
     results = []
     for mid in targets:
@@ -151,6 +197,10 @@ def main() -> None:
                 mid, args.output_root, args.freq,
                 args.epochs, args.batch_size, args.lr, args.val_days,
                 target=args.target, groups=groups,
+                early_stop=args.early_stop,
+                patience=args.patience,
+                restore_best=not args.no_restore_best,
+                output_suffix=output_suffix,
             )
             results.append(metrics)
         except Exception as e:

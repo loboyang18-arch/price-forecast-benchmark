@@ -105,7 +105,15 @@ def _train_loop(
     model, train_ds, val_ds, test_ds,
     y_mean: float, y_std: float,
     epochs: int, batch_size: int, lr: float,
+    early_stop: bool = False, patience: int = 10, restore_best: bool = True,
 ) -> Tuple[float, dict]:
+    """训练循环。
+
+    early_stop=False（默认）：跑满 epochs，用最后一轮权重做测试（原行为）。
+    early_stop=True：每个 epoch 都评估 val_mae；val 改善则保存 state_dict；
+        连续 patience 个 epoch 无改善则提前停止；若 restore_best=True，
+        训练结束后把模型权重恢复到 best-val checkpoint。
+    """
     tl = DataLoader(train_ds, batch_size, shuffle=True, drop_last=True)
     train_eval_l = DataLoader(train_ds, min(512, len(train_ds)), shuffle=False)
     val_l = DataLoader(val_ds, min(512, max(len(val_ds), 1)), shuffle=False) if val_ds else None
@@ -121,6 +129,10 @@ def _train_loop(
         milestones=[WARMUP_EPOCHS])
 
     best_val_mae = float("inf")
+    best_epoch = -1
+    best_state = None
+    no_improve = 0
+    stopped_at = epochs - 1
     history: List[dict] = []
     log_interval = 5 if epochs > 50 else 2
 
@@ -146,22 +158,39 @@ def _train_loop(
             nb += 1
         sched.step()
 
+        # 早停模式下每 epoch 都计算 val_mae 用于改善判断；
+        # 否则按 log_interval 计算（原行为）。
+        do_eval = early_stop or (ep % log_interval == 0) or (ep == epochs - 1)
+        if do_eval and val_l is not None:
+            val_mae = _eval_mae(model, val_l, y_mean, y_std)
+            improved = val_mae < best_val_mae
+            if improved:
+                best_val_mae = val_mae
+                best_epoch = ep
+                no_improve = 0
+                if early_stop and restore_best:
+                    best_state = {k: v.detach().cpu().clone()
+                                  for k, v in model.state_dict().items()}
+            else:
+                no_improve += 1
+        else:
+            val_mae = float("nan")
+            improved = False
+
         if ep % log_interval == 0 or ep == epochs - 1:
             train_mae = _eval_mae(model, train_eval_l, y_mean, y_std)
-            val_mae = _eval_mae(model, val_l, y_mean, y_std) if val_l else float("nan")
             test_mae = _eval_mae(model, test_l, y_mean, y_std) if test_l else float("nan")
             val_dir = _eval_dir_acc(model, val_l) if val_l else float("nan")
-            if val_l and val_mae < best_val_mae:
-                best_val_mae = val_mae
             cur_lr = opt.param_groups[0]["lr"]
             logger.info(
                 "  ep%3d  L1=%.4f CE=%.3f dir_acc=%.3f"
-                " | train=%.1f val=%.1f test=%.1f best=%.1f"
-                " | v_dir=%.3f  lr=%.1e",
+                " | train=%.1f val=%.1f test=%.1f best=%.1f@%d"
+                " | v_dir=%.3f  lr=%.1e  no_impr=%d",
                 ep, ep_l1 / max(nb, 1), ep_ce / max(nb, 1),
                 ep_dir_ok / max(ep_dir_n, 1),
-                train_mae, val_mae, test_mae, best_val_mae,
-                val_dir, cur_lr,
+                train_mae, val_mae, test_mae,
+                best_val_mae, best_epoch,
+                val_dir, cur_lr, no_improve,
             )
             history.append({
                 "epoch": ep,
@@ -170,9 +199,29 @@ def _train_loop(
                 "test_mae": test_mae,
                 "val_dir_acc": val_dir,
                 "lr": cur_lr,
+                "improved": improved,
+                "no_improve": no_improve,
             })
 
-    return best_val_mae, {"history": history}
+        if early_stop and no_improve >= patience:
+            logger.info(
+                "  early stop @ epoch %d (best=%.2f @ epoch %d, patience=%d)",
+                ep, best_val_mae, best_epoch, patience,
+            )
+            stopped_at = ep
+            break
+
+    if early_stop and restore_best and best_state is not None:
+        model.load_state_dict(best_state)
+        logger.info("  restored model weights from best epoch %d (val_mae=%.2f)",
+                    best_epoch, best_val_mae)
+
+    return best_val_mae, {
+        "history": history,
+        "stopped_at_epoch": stopped_at,
+        "best_epoch": best_epoch,
+        "restored_best": bool(early_stop and restore_best and best_state is not None),
+    }
 
 
 def run_experiment(
@@ -187,6 +236,9 @@ def run_experiment(
     lr: float = DEFAULT_LR,
     val_days: int = 7,
     seed: int = 42,
+    early_stop: bool = False,
+    patience: int = 10,
+    restore_best: bool = True,
 ) -> dict:
     """跑单市场单粒度的训练 + 测试。
 
@@ -256,6 +308,7 @@ def run_experiment(
     best_val_mae, train_log = _train_loop(
         model, train_ds, val_ds, test_ds, y_mean, y_std,
         epochs=epochs, batch_size=batch_size, lr=lr,
+        early_stop=early_stop, patience=patience, restore_best=restore_best,
     )
 
     # ── 测试集预测 ────────────────────────────────────
@@ -333,6 +386,12 @@ def run_experiment(
         "test_dir_acc": round(test_dir_acc, 4),
         "feature_spec": resolved.to_dict(),         # 用于追溯
         "stream_cols": stream_cols,
+        "early_stop": early_stop,
+        "patience": patience if early_stop else None,
+        "restore_best": restore_best if early_stop else None,
+        "stopped_at_epoch": train_log.get("stopped_at_epoch"),
+        "best_epoch": train_log.get("best_epoch"),
+        "restored_best": train_log.get("restored_best", False),
     }
     logger.info(
         "Conv2D-MultiTask | %s [%s]  test_MAE=%.2f  RMSE=%.2f  profile_corr=%.3f  dir_acc=%.3f",

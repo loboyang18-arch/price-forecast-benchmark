@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import sys
 from pathlib import Path
@@ -17,6 +18,7 @@ ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT))
 
 from pfbench.data import load_market_data
+from pfbench.exp_meta import make_experiment_id, save_config_snapshot
 from pfbench.feature_registry import FeatureSpec, resolve_columns
 from pfbench.market_config import get_market_split
 
@@ -84,9 +86,22 @@ def main() -> None:
         split = get_market_split(mid)
         algo_dir = "lightgbm_baseline_15min" if args.freq == "15min" else "lightgbm_baseline"
         out_dir = args.output_root / mid / algo_dir
+        out_dir.mkdir(parents=True, exist_ok=True)
+        exp_id = make_experiment_id(mid, algo_dir, target=cfg.target_col)
+        save_config_snapshot(
+            out_dir, exp_id,
+            algorithm="lightgbm_baseline",
+            market=mid, target=cfg.target_col, freq=args.freq,
+            extra={
+                "feature_groups": {n: len(g.cols) for n, g in resolved.groups.items()},
+                "test_start": str(split.test_start),
+                "test_end": str(split.test_end),
+            },
+        )
         print(f"\n{'='*60}")
         print(f"  {mid} [{args.freq}] → target={cfg.target_col}, test_start={split.test_start}")
         print(f"  feature_groups: { {n: len(g.cols) for n, g in resolved.groups.items()} }")
+        print(f"  experiment_id={exp_id}")
         print(f"{'='*60}")
 
         try:
@@ -96,6 +111,10 @@ def main() -> None:
                 test_start=split.test_start, test_end=split.test_end,
                 freq=args.freq,
                 feature_spec=resolved.to_dict(),
+            )
+            metrics["experiment_id"] = exp_id
+            (out_dir / "metrics.json").write_text(
+                json.dumps(metrics, ensure_ascii=False, indent=2), encoding="utf-8"
             )
             results.append(metrics)
             print(f"  MAE={metrics['mae']:.4f}  RMSE={metrics['rmse']:.4f}  "

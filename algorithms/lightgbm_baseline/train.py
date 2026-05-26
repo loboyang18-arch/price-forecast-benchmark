@@ -192,7 +192,14 @@ def _save_results(
 ) -> None:
     """保存预测结果、指标、特征重要性。"""
     fname = "test_predictions_15min.csv" if freq == "15min" else "test_predictions_hourly.csv"
-    preds.to_csv(output_dir / fname, index=False)
+    pred_path = output_dir / fname
+    preds.to_csv(pred_path, index=False)
+    try:
+        from pfbench.metrics import evaluate_predictions_csv
+        metrics["extended_metrics"] = evaluate_predictions_csv(pred_path)
+    except Exception as exc:
+        logger.warning("extended_metrics 计算失败: %s", exc)
+        metrics["extended_metrics"] = None
     (output_dir / "metrics.json").write_text(
         json.dumps(metrics, ensure_ascii=False, indent=2), encoding="utf-8",
     )

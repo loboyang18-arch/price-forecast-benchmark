@@ -31,17 +31,17 @@ notes: |
 # 跨算法共享的特征本体（由 pfbench.feature_registry 读取并解析）。
 # 详见 pfbench/feature_registry.py 中 FEATURE_GROUPS 的定义。
 features:
-  target_default: price_unified
+  target_default: price_hongjing_220kv1m_nodal      # 红井 220kV 节点电价（含能量+阻塞）
   alt_targets:
-    - price_unified
-    - price_sudun_500kv1m_nodal
+    - price_hongjing_220kv1m_nodal      # 红井节点价（默认）
+    - price_hongjing_220kv1m_energy     # 红井能量价
+    - price_hongjing_220kv1m_cong       # 红井阻塞价
+    - price_sudun_500kv1m_nodal         # 苏敦节点价
     - price_sudun_500kv1m_energy
     - price_sudun_500kv1m_cong
-    - price_hongjing_220kv1m_nodal
-    - price_hongjing_220kv1m_energy
-    - price_hongjing_220kv1m_cong
-    - price_hbd
-    - price_hbx
+    - price_unified                     # 全网统一出清价
+    - price_hbd                         # 呼包东统一价
+    - price_hbx                         # 呼包西统一价
 
   # 各类别默认 lag 标签；算法侧可通过 FeatureSpec.lag_overrides 覆盖。
   # 语义化 lag，运行时由 pfbench.lag_resolver 按 freq (1h/15min) 转为 periods。
