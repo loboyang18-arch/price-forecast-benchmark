@@ -28,11 +28,14 @@ ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT))
 
 from pfbench.data import load_market_data
+from pfbench.feature_registry import FeatureSpec, resolve_columns
 from pfbench.market_config import get_market_split
 
-from algorithms.lightgbm_twostage.config import MARKET_CONFIGS
+from algorithms.lightgbm_twostage.config import MarketConfig
 from algorithms.lightgbm_twostage.cv import CVConfig, compute_baselines, expanding_window_cv
 from algorithms.lightgbm_twostage.features import build_features
+
+SUPPORTED_MARKETS = ["neimeng", "chongqing", "jiangsu"]
 
 
 def _setup_logging(verbose: bool) -> None:
@@ -46,9 +49,12 @@ def _setup_logging(verbose: bool) -> None:
 def run_single_market(
     market_id: str, mode: str, output_root: Path,
     time_decay: int, top_k: int, freq: str = "1h",
+    target: str = None, groups: list = None,
 ) -> Dict[str, Any]:
     """运行单市场实验，返回汇总指标。"""
-    cfg = MARKET_CONFIGS[market_id]
+    spec = FeatureSpec(target=target, groups=groups)
+    resolved = resolve_columns(market_id, spec, freq=freq)
+    cfg = MarketConfig.from_resolved_spec(resolved)
     split = get_market_split(market_id)
     algo_dir = "lightgbm_twostage_15min" if freq == "15min" else "lightgbm_twostage"
     algo_label = "LightGBM-TwoStage-15min" if freq == "15min" else "LightGBM-TwoStage"
@@ -58,6 +64,7 @@ def run_single_market(
     print(f"\n{'='*60}")
     print(f"  {market_id} — {algo_label} ({mode})")
     print(f"  target={cfg.target_col}, test_start={split.test_start} (from market yaml)")
+    print(f"  feature_groups: { {n: len(g.cols) for n, g in resolved.groups.items()} }")
     print(f"{'='*60}")
 
     df, meta = load_market_data(market_id)
@@ -151,6 +158,7 @@ def run_single_market(
         "mode": mode,
         "freq": freq,
         "target_col": cfg.target_col,
+        "feature_spec": resolved.to_dict(),
         "feature_count": len(x_cols),
         "n_dates": int(feat["trade_date"].nunique()),
         "cv_folds": len(folds),
@@ -225,27 +233,36 @@ def main() -> None:
                     default="two_stage", help="建模模式")
     ap.add_argument("--time-decay", type=int, default=30, help="时间衰减半衰期（天，0=关闭）")
     ap.add_argument("--top-k", type=int, default=0, help="特征选择 top-K（0=不选择）")
+    ap.add_argument("--target", default=None,
+                    help="覆盖默认 target；必须在该市场 yaml 的 alt_targets 中")
+    ap.add_argument("--groups", default=None,
+                    help="逗号分隔的 feature groups（默认使用 yaml 中 enabled=true 的类别）")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()
 
     _setup_logging(args.verbose)
 
     targets = (
-        list(MARKET_CONFIGS.keys()) if args.market == "all"
+        list(SUPPORTED_MARKETS) if args.market == "all"
         else [m.strip() for m in args.market.split(",")]
     )
+
+    groups = None
+    if args.groups:
+        groups = [g.strip() for g in args.groups.split(",") if g.strip()]
 
     failed = []
     all_results = []
     for mid in targets:
-        if mid not in MARKET_CONFIGS:
-            print(f"未知市场: {mid}，可选 {list(MARKET_CONFIGS.keys())}")
+        if mid not in SUPPORTED_MARKETS:
+            print(f"未知市场: {mid}，可选 {SUPPORTED_MARKETS}")
             failed.append(mid)
             continue
         try:
             r = run_single_market(
                 mid, args.mode, args.output_root,
                 args.time_decay, args.top_k, freq=args.freq,
+                target=args.target, groups=groups,
             )
             all_results.append(r)
         except Exception as e:

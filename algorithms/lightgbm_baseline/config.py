@@ -1,22 +1,30 @@
-"""LightGBM baseline — 市场特征映射配置。
+"""LightGBM-Baseline — 市场特征视图（由 Feature Registry 派生）。
 
-每个市场定义：
-  target_col   — 预测目标列
-  lag0_cols    — D日已知预测/计划值（不 shift）
-  lag1_cols    — D-1日出清/价格类（shift 24h）
-  lag2_cols    — D-2日实际运行值（shift 48h）
+本算法不再 hardcode 特征列。所有列名通过 ``pfbench.feature_registry`` 从
+``config/markets/<market>.yaml`` 的 ``features`` 块解析得到，运行时由
+``MarketConfig.from_resolved_spec()`` 派生为本算法所需的 lag0/1/2 视图。
 
-注意：test_start 由 config/markets/<market_id>.yaml 统一定义，
-      通过 pfbench.market_config.get_market_split() 获取。
+类别 → lag 视图的映射：
+    lag0 = BOUNDARY + BOUNDARY_CLEARED + WEATHER   (D 日已知，不 shift)
+    lag1 = CLEARING_DA + CLEARING_RT               (D-1 价格)
+    lag2 = ACTUAL                                  (D-2 实际)
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List
+from typing import List
+
+from pfbench.feature_registry import ResolvedSpec
+
+LAG0_GROUPS = ("BOUNDARY", "BOUNDARY_CLEARED", "WEATHER")
+LAG1_GROUPS = ("CLEARING_DA", "CLEARING_RT")
+LAG2_GROUPS = ("ACTUAL",)
 
 
 @dataclass
 class MarketConfig:
+    """LightGBM-Baseline 在 features.py 内部使用的特征视图。"""
+
     market_id: str
     target_col: str
     lag0_cols: List[str]
@@ -24,111 +32,34 @@ class MarketConfig:
     lag2_cols: List[str]
     price_lag_hours: List[int] = field(default_factory=lambda: [24, 48, 168])
 
+    @classmethod
+    def from_resolved_spec(cls, resolved: ResolvedSpec) -> "MarketConfig":
+        """从 Feature Registry 的 ResolvedSpec 派生本算法所需视图。
 
-NEIMENG = MarketConfig(
-    market_id="neimeng",
-    target_col="price_unified",
-    lag0_cols=[
-        "load_forecast",
-        "renewable_forecast",
-        "wind_forecast",
-        "solar_forecast",
-        "east_send_forecast",
-        "reserve_pos_capacity",
-        "reserve_neg_capacity",
-        "price_dayahead_preclear_energy",
-    ],
-    lag1_cols=[
-        "price_unified",
-        "price_sudun_500kv1m_nodal",
-        "price_sudun_500kv1m_energy",
-        "price_sudun_500kv1m_cong",
-        "price_hongjing_220kv1m_nodal",
-        "price_hongjing_220kv1m_energy",
-        "price_hongjing_220kv1m_cong",
-        "price_hbd",
-        "price_hbx",
-    ],
-    lag2_cols=[
-        "load_actual",
-        "renewable_actual",
-        "wind_actual",
-        "solar_actual",
-    ],
-)
+        ``price_lag_hours`` 反推自 CLEARING_DA 的 lag_periods + freq，保持"小时数"语义，
+        使得 features.py 中 ``_add_price_lags`` 的 multiplier 逻辑无需改动。
+        """
+        def _gather(group_names):
+            cols: List[str] = []
+            for name in group_names:
+                g = resolved.groups.get(name)
+                if g is None:
+                    continue
+                cols.extend(g.cols)
+            return cols
 
-CHONGQING = MarketConfig(
-    market_id="chongqing",
-    target_col="market_clearing_price",
-    lag0_cols=[
-        "total_load_pred_v1",
-        "total_gen_pred_v1",
-        "renewable_pred_v1",
-        "solar_pred_v1",
-        "wind_pred_v1",
-        "hydro_pred_v1",
-        "trans_pred_v1",
-        "nonmarket_gen_pred_v1",
-        "temperature_2m",
-        "shortwave_radiation",
-        "wind_speed_10m",
-        "cloud_cover",
-    ],
-    lag1_cols=[
-        "market_clearing_price",
-        "market_clearing_power",
-        "realtime_clearing_price",
-        "realtime_clearing_energy",
-        "reliability_clearing_price",
-        "reliability_clearing_power",
-    ],
-    lag2_cols=[
-        "total_load_actual",
-        "total_gen_actual",
-        "renewable_actual",
-        "hydro_actual",
-        "trans_actual",
-        "nonmarket_gen_actual",
-    ],
-)
+        step_minutes = 60 if resolved.freq == "1h" else 15
+        da = resolved.groups.get("CLEARING_DA")
+        if da is not None and da.lag_periods:
+            price_lag_hours = [int(p * step_minutes / 60) for p in da.lag_periods]
+        else:
+            price_lag_hours = [24, 48, 168]
 
-JIANGSU = MarketConfig(
-    market_id="jiangsu",
-    target_col="price_dayahead_jn_node_江南",
-    lag0_cols=[
-        "load_forecast_boundary_汇总",
-        "wind_forecast_boundary_江北",
-        "wind_forecast_boundary_江南",
-        "pv_forecast_boundary_江北",
-        "pv_forecast_boundary_江南",
-        "gas_plan_boundary_江北",
-        "gas_plan_boundary_江南",
-        "receive_plan_boundary_汇总",
-        "reserve_positive_汇总",
-        "reserve_negative_汇总",
-    ],
-    lag1_cols=[
-        "price_dayahead_jn_node_江南",
-        "price_dayahead_jn_江南",
-        "price_dayahead_jb_node_江北",
-        "price_dayahead_jb_江北",
-        "price_realtime_jn_final_江南",
-        "price_realtime_jb_final_江北",
-    ],
-    lag2_cols=[
-        "load_actual_total_汇总",
-        "gas_actual_江北",
-        "gas_actual_江南",
-        "pv_actual_江北",
-        "pv_actual_江南",
-        "wind_actual_江北",
-        "wind_actual_江南",
-        "receive_actual_huadong_华东",
-    ],
-)
-
-MARKET_CONFIGS: Dict[str, MarketConfig] = {
-    "neimeng": NEIMENG,
-    "chongqing": CHONGQING,
-    "jiangsu": JIANGSU,
-}
+        return cls(
+            market_id=resolved.market_id,
+            target_col=resolved.target,
+            lag0_cols=_gather(LAG0_GROUPS),
+            lag1_cols=_gather(LAG1_GROUPS),
+            lag2_cols=_gather(LAG2_GROUPS),
+            price_lag_hours=price_lag_hours,
+        )

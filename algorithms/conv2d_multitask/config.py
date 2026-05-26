@@ -1,122 +1,34 @@
-"""Conv2D-MultiTask — 市场配置。
+"""Conv2D-MultiTask — 架构常量 + group→stream 映射。
 
-每市场定义三组特征通道（与 lightgbm_baseline 语义一致）：
-  lag0_cols：D 日 boundary/预测/计划值（不 shift）
-  lag1_cols：D-1 日历史价格/出清
-  lag2_cols：D-2 日实际运行值
+特征列名 / target / alt_targets 全部由 ``pfbench.feature_registry`` 从
+``config/markets/<id>.yaml`` 读取，本文件不再硬写 per-market 列表。
 
-注意：test_start / test_end 由 config/markets/<market_id>.yaml 统一定义，
-      通过 pfbench.market_config.get_market_split() 获取。
+Conv2D 的特殊之处：它使用**连续 7 天回看窗口**，而不是离散 lag shift。所以这里
+把 feature_registry 的 7 个语义类别（BOUNDARY / CLEARING_DA / ACTUAL 等）按
+"时间相位"映射到 3 个 stream：
+
+  - ``STREAM_BOUNDARY``：D 日已知的事前数据 → 7 天窗口为 [D-6, D]
+  - ``STREAM_HISTORY``：D-1 末已知的历史价格/出清 → 7 天窗口为 [D-7, D-1]
+  - ``STREAM_ACTUAL``：D-2 末已知的实际运行值 → 7 天窗口为 [D-8, D-2]
+
+这样保证整个张量沿着「目标日 D」对齐，且不引入未来信息。
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Dict, List
+from typing import Tuple
 
+# ── feature_registry 类别 → conv2d 3-stream 映射 ─────────────
+# 每个 stream 对应「时间相位」相同的若干 feature_registry 类别。
+STREAM_BOUNDARY: Tuple[str, ...] = ("BOUNDARY", "BOUNDARY_CLEARED", "WEATHER")
+STREAM_HISTORY:  Tuple[str, ...] = ("CLEARING_DA", "CLEARING_RT")
+STREAM_ACTUAL:   Tuple[str, ...] = ("ACTUAL",)
 
-@dataclass
-class MarketConfig:
-    market_id: str
-    target_col: str
-    lag0_cols: List[str]
-    lag1_cols: List[str]
-    lag2_cols: List[str]
-    floor_price: float = 50.0
-
-
-NEIMENG = MarketConfig(
-    market_id="neimeng",
-    target_col="price_unified",
-    lag0_cols=[
-        "load_forecast",
-        "renewable_forecast",
-        "wind_forecast",
-        "solar_forecast",
-        "east_send_forecast",
-        "reserve_pos_capacity",
-        "reserve_neg_capacity",
-        "price_dayahead_preclear_energy",
-    ],
-    lag1_cols=[
-        "price_unified",
-        "price_hbd",
-        "price_hbx",
-        "price_sudun_500kv1m_energy",
-        "price_sudun_500kv1m_cong",
-    ],
-    lag2_cols=[
-        "load_actual",
-        "renewable_actual",
-        "wind_actual",
-        "solar_actual",
-    ],
-)
-
-CHONGQING = MarketConfig(
-    market_id="chongqing",
-    target_col="market_clearing_price",
-    lag0_cols=[
-        "total_load_pred_v1",
-        "total_gen_pred_v1",
-        "renewable_pred_v1",
-        "solar_pred_v1",
-        "wind_pred_v1",
-        "hydro_pred_v1",
-        "trans_pred_v1",
-        "nonmarket_gen_pred_v1",
-    ],
-    lag1_cols=[
-        "market_clearing_price",
-        "realtime_clearing_price",
-        "reliability_clearing_price",
-    ],
-    lag2_cols=[
-        "total_load_actual",
-        "total_gen_actual",
-        "renewable_actual",
-        "hydro_actual",
-        "trans_actual",
-        "nonmarket_gen_actual",
-    ],
-)
-
-JIANGSU = MarketConfig(
-    market_id="jiangsu",
-    target_col="price_dayahead_jn_node_江南",
-    lag0_cols=[
-        "load_forecast_boundary_汇总",
-        "wind_forecast_boundary_江北",
-        "wind_forecast_boundary_江南",
-        "pv_forecast_boundary_江北",
-        "pv_forecast_boundary_江南",
-        "gas_plan_boundary_江北",
-        "gas_plan_boundary_江南",
-        "receive_plan_boundary_汇总",
-        "reserve_positive_汇总",
-        "reserve_negative_汇总",
-    ],
-    lag1_cols=[
-        "price_dayahead_jn_node_江南",
-        "price_dayahead_jb_node_江北",
-        "price_realtime_jn_final_江南",
-        "price_realtime_jb_final_江北",
-    ],
-    lag2_cols=[
-        "load_actual_total_汇总",
-        "pv_actual_江北",
-        "pv_actual_江南",
-        "wind_actual_江北",
-        "wind_actual_江南",
-        "receive_actual_huadong_华东",
-    ],
-)
-
-MARKET_CONFIGS: Dict[str, MarketConfig] = {
-    "neimeng": NEIMENG,
-    "chongqing": CHONGQING,
-    "jiangsu": JIANGSU,
+# 各 stream 的"距离今日的起点偏移天数"（与 _build_daily_arrays 中 LOOKBACK 配对）
+STREAM_DAY_OFFSET = {
+    "boundary": 0,    # 7 天回看 = [D-6, D]
+    "history":  1,    # 7 天回看 = [D-7, D-1]
+    "actual":   2,    # 7 天回看 = [D-8, D-2]
 }
-
 
 # ── Conv2D 架构参数（市场无关） ───────────────────────────────
 LOOKBACK_DAYS = 7        # 回看 7 天

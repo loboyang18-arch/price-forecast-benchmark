@@ -21,4 +21,67 @@ data:
 notes: |
   15min 真源含 81 列（市场 + 天气）。
   market_clearing_price 从 2025-11 起有值，之前全 NaN。
-  target_col 和 train/val/test 切分由下游算法自行决定。
+  features.target_default 是默认 target；算法可从 alt_targets 中选其它列。
+
+# 跨算法共享的特征本体（由 pfbench.feature_registry 读取并解析）。
+features:
+  target_default: market_clearing_price
+  alt_targets:
+    - market_clearing_price       # 日前出清价
+    - realtime_clearing_price     # 实时出清价
+    - reliability_clearing_price  # 可靠性出清价
+
+  default_lag_labels:
+    BOUNDARY: []
+    BOUNDARY_CLEARED: []
+    WEATHER: []
+    CLEARING_DA: ["1d", "2d", "7d"]
+    CLEARING_RT: ["1d", "2d", "7d"]
+    ACTUAL: ["2d", "7d"]
+
+  groups:
+    BOUNDARY:                     # _pred_v1 系列（默认用 v1）
+      enabled: true
+      cols:
+        - total_load_pred_v1
+        - total_gen_pred_v1
+        - renewable_pred_v1
+        - solar_pred_v1
+        - wind_pred_v1
+        - hydro_pred_v1
+        - trans_pred_v1
+        - nonmarket_gen_pred_v1
+    BOUNDARY_CLEARED:             # _pred_v2 系列（修正版，默认不启用）
+      enabled: false
+      cols:
+        - total_gen_pred_v2
+        - renewable_pred_v2
+        - solar_pred_v2
+        - wind_pred_v2
+        - hydro_pred_v2
+        - trans_pred_v2
+        - nonmarket_gen_pred_v2
+    WEATHER:                      # 三市场统一不使用天气
+      enabled: false
+      cols: []
+    CLEARING_DA:                  # 历史日前出清价 + 量/功率/可靠性
+      enabled: true
+      cols:
+        - market_clearing_price
+        - market_clearing_power
+        - reliability_clearing_price
+        - reliability_clearing_power
+    CLEARING_RT:                  # 历史实时出清
+      enabled: true
+      cols:
+        - realtime_clearing_price
+        - realtime_clearing_energy
+    ACTUAL:                       # 历史实际运行值
+      enabled: true
+      cols:
+        - total_load_actual
+        - total_gen_actual
+        - renewable_actual
+        - hydro_actual
+        - trans_actual
+        - nonmarket_gen_actual

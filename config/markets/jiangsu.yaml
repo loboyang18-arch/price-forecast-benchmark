@@ -27,4 +27,83 @@ notes: |
   shift_ts_to_period_start 将时间戳从 period-end 左移 15min 到 period-start，与重庆/内蒙一致。
   drop_qflag_columns 去掉 34 个质量标记列，保留 37 列。
   fill_reserve_from_prev_week 补齐 11-16/11-23 两日正负备用（用前一周同时段）。
-  target_col 和 train/val/test 切分由下游算法自行决定。
+  features.target_default 是默认 target；算法可从 alt_targets 中选其它列。
+  _boundary 与 _clearing 含义：见 jiangsu_prj/report/总表数据入库方案.md。
+    _boundary  = 江苏电网下发的事前原始边界（D-1 22:00 前）
+    _clearing  = 出清后回算的事前预测/计划（仍为 D-1 末已知，但经过出清优化）
+    两组数据高度相似（相对差 < 6%），默认只启用 _boundary。
+
+# 跨算法共享的特征本体（由 pfbench.feature_registry 读取并解析）。
+features:
+  target_default: price_dayahead_jn_node_江南
+  alt_targets:
+    - price_dayahead_jn_node_江南       # 日前江南节点价（默认）
+    - price_dayahead_jb_node_江北       # 日前江北节点价
+    - price_dayahead_jn_江南            # 日前江南区域价
+    - price_dayahead_jb_江北            # 日前江北区域价
+    - price_realtime_jn_final_江南      # 实时江南最终价
+    - price_realtime_jb_final_江北      # 实时江北最终价
+    - price_realtime_jn_node_江南       # 实时江南节点价
+    - price_realtime_jb_node_江北       # 实时江北节点价
+
+  default_lag_labels:
+    BOUNDARY: []
+    BOUNDARY_CLEARED: []
+    WEATHER: []
+    CLEARING_DA: ["1d", "2d", "7d"]
+    CLEARING_RT: ["1d", "2d", "7d"]
+    ACTUAL: ["2d", "7d"]
+
+  groups:
+    BOUNDARY:                     # 事前原始边界 (_boundary)
+      enabled: true
+      cols:
+        - load_forecast_boundary_汇总
+        - receive_plan_boundary_汇总
+        - reserve_positive_汇总
+        - reserve_negative_汇总
+        - wind_forecast_boundary_江北
+        - wind_forecast_boundary_江南
+        - pv_forecast_boundary_江北
+        - pv_forecast_boundary_江南
+        - gas_plan_boundary_江北
+        - gas_plan_boundary_江南
+    BOUNDARY_CLEARED:             # 出清修正版 (_clearing)；默认不启用
+      enabled: false
+      cols:
+        - load_forecast_clearing_汇总
+        - receive_plan_clearing_汇总
+        - wind_forecast_clearing_江北
+        - wind_forecast_clearing_江南
+        - pv_forecast_clearing_江北
+        - pv_forecast_clearing_江南
+        - gas_plan_clearing_江北
+        - gas_plan_clearing_江南
+    WEATHER:                      # 江苏数据集无天气列
+      enabled: false
+      cols: []
+    CLEARING_DA:                  # 历史日前出清价（节点 + 区域）
+      enabled: true
+      cols:
+        - price_dayahead_jn_node_江南
+        - price_dayahead_jn_江南
+        - price_dayahead_jb_node_江北
+        - price_dayahead_jb_江北
+    CLEARING_RT:                  # 历史实时出清价（final + 节点）
+      enabled: true
+      cols:
+        - price_realtime_jn_final_江南
+        - price_realtime_jb_final_江北
+        - price_realtime_jn_node_江南
+        - price_realtime_jb_node_江北
+    ACTUAL:                       # 历史实际运行值
+      enabled: true
+      cols:
+        - load_actual_total_汇总
+        - gas_actual_江北
+        - gas_actual_江南
+        - pv_actual_江北
+        - pv_actual_江南
+        - wind_actual_江北
+        - wind_actual_江南
+        - receive_actual_huadong_华东

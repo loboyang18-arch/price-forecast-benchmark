@@ -26,4 +26,70 @@ notes: |
   fill_sudun_prices 补齐苏敦三列（09-29 整日缺失用 price_unified 代理）。
   fill_hongjing_from_unified 补齐红井三列（09-29 整日缺失用 price_unified 代理）。
   fill_unified_from_sudun 补齐统一出清价（04-09 整日缺失用苏敦节点价代理）。
-  target_col 和 train/val/test 切分由下游算法自行决定。
+  features.target_default 是默认 target；算法可从 alt_targets 中选其它列。
+
+# 跨算法共享的特征本体（由 pfbench.feature_registry 读取并解析）。
+# 详见 pfbench/feature_registry.py 中 FEATURE_GROUPS 的定义。
+features:
+  target_default: price_unified
+  alt_targets:
+    - price_unified
+    - price_sudun_500kv1m_nodal
+    - price_sudun_500kv1m_energy
+    - price_sudun_500kv1m_cong
+    - price_hongjing_220kv1m_nodal
+    - price_hongjing_220kv1m_energy
+    - price_hongjing_220kv1m_cong
+    - price_hbd
+    - price_hbx
+
+  # 各类别默认 lag 标签；算法侧可通过 FeatureSpec.lag_overrides 覆盖。
+  # 语义化 lag，运行时由 pfbench.lag_resolver 按 freq (1h/15min) 转为 periods。
+  default_lag_labels:
+    BOUNDARY: []                  # 不 shift（D 日已知）
+    BOUNDARY_CLEARED: []
+    WEATHER: []
+    CLEARING_DA: ["1d", "2d", "7d"]
+    CLEARING_RT: ["1d", "2d", "7d"]
+    ACTUAL: ["2d", "7d"]
+
+  groups:
+    BOUNDARY:                     # D-1 末已知的事前预测/计划/边界
+      enabled: true
+      cols:
+        - load_forecast
+        - renewable_forecast
+        - wind_forecast
+        - solar_forecast
+        - east_send_forecast
+        - reserve_pos_capacity
+        - reserve_neg_capacity
+        - price_dayahead_preclear_energy
+    BOUNDARY_CLEARED:             # 出清修正版（内蒙数据无此类）
+      enabled: false
+      cols: []
+    WEATHER:                      # 三市场统一不使用天气
+      enabled: false
+      cols: []
+    CLEARING_DA:                  # 历史日前出清价（含节点价）
+      enabled: true
+      cols:
+        - price_unified
+        - price_hbd
+        - price_hbx
+        - price_sudun_500kv1m_nodal
+        - price_sudun_500kv1m_energy
+        - price_sudun_500kv1m_cong
+        - price_hongjing_220kv1m_nodal
+        - price_hongjing_220kv1m_energy
+        - price_hongjing_220kv1m_cong
+    CLEARING_RT:                  # 内蒙无独立实时价
+      enabled: false
+      cols: []
+    ACTUAL:                       # 历史实际运行值
+      enabled: true
+      cols:
+        - load_actual
+        - renewable_actual
+        - wind_actual
+        - solar_actual

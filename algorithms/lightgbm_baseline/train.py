@@ -49,10 +49,12 @@ def run_experiment(
     test_start: str,
     test_end: str,
     freq: str = "1h",
+    feature_spec: Dict[str, Any] = None,
 ) -> Dict[str, Any]:
     """完整实验：特征构建 → 切分 → 训练 → 预测 → 评估 → 保存。
 
     freq: "1h" 或 "15min"，决定特征粒度与预测粒度。
+    feature_spec: 由 ResolvedSpec.to_dict() 提供，写入 metrics.json 做实验追溯。
     """
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -60,6 +62,8 @@ def run_experiment(
     train_df, val_df, test_df = _split(feat, test_start, test_end)
     model, importance = _train(train_df, val_df)
     preds, metrics = _evaluate(model, test_df, cfg, test_start, freq)
+    if feature_spec is not None:
+        metrics["feature_spec"] = feature_spec
 
     _save_results(preds, metrics, importance, cfg, output_dir, freq)
     return metrics

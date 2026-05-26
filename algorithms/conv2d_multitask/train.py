@@ -15,11 +15,12 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
+from pfbench.feature_registry import FeatureSpec, ResolvedSpec, resolve_columns
+
 from .config import (
     CONTEXT_AFTER,
     CONTEXT_BEFORE,
     LOOKBACK_DAYS,
-    MarketConfig,
     SLOTS_AFTER,
     SLOTS_BEFORE,
     SLOTS_PER_HOUR,
@@ -176,37 +177,47 @@ def _train_loop(
 
 def run_experiment(
     df_15min: pd.DataFrame,
-    cfg: MarketConfig,
+    market_id: str,
     test_start: pd.Timestamp,
     test_end: pd.Timestamp,
     freq: str = "1h",
+    spec: FeatureSpec = None,
     epochs: int = DEFAULT_EPOCHS,
     batch_size: int = DEFAULT_BATCH_SIZE,
     lr: float = DEFAULT_LR,
     val_days: int = 7,
     seed: int = 42,
 ) -> dict:
-    """跑单市场单粒度的训练 + 测试。"""
+    """跑单市场单粒度的训练 + 测试。
+
+    Args:
+        df_15min: 输入 15min 长表（DataFrame，DatetimeIndex）
+        market_id: 市场 ID（用于查 feature_registry）
+        spec: FeatureSpec（若 None，使用 yaml 默认 target + 默认启用类别）
+    """
     _seed(seed)
+    if spec is None:
+        spec = FeatureSpec()
+    resolved = resolve_columns(market_id, spec, freq=freq)
     logger.info(
-        "=" * 60 + "\nConv2D-MultiTask  market=%s  freq=%s  test=%s ~ %s",
-        cfg.market_id, freq, test_start.date(), test_end.date(),
+        "=" * 60 + "\nConv2D-MultiTask  market=%s  target=%s  freq=%s  test=%s ~ %s\n"
+        "  feature groups: %s",
+        market_id, resolved.target, freq, test_start.date(), test_end.date(),
+        {n: len(g.cols) for n, g in resolved.groups.items()},
     )
 
-    valid_dates, day_lag0, day_lag1, day_lag2, day_targets, c_total, steps_per_day = (
-        build_daily_arrays(df_15min, cfg, freq=freq)
-    )
+    (valid_dates, day_boundary, day_history, day_actual, day_targets,
+     c_total, steps_per_day, stream_cols) = build_daily_arrays(df_15min, resolved, freq=freq)
     if not valid_dates:
-        raise RuntimeError(f"{cfg.market_id}: 无有效日期")
+        raise RuntimeError(f"{market_id}: 无有效日期")
 
     test_d0 = test_start.date()
     test_d1 = test_end.date()
     train_days = [d for d in valid_dates if d < test_d0]
     test_days = [d for d in valid_dates if test_d0 <= d <= test_d1]
 
-    # val = train 末尾 N 天（不参与 train）
     if len(train_days) <= val_days:
-        raise RuntimeError(f"{cfg.market_id}: 训练集过小 ({len(train_days)} 天)")
+        raise RuntimeError(f"{market_id}: 训练集过小 ({len(train_days)} 天)")
     val_split_days = train_days[-val_days:]
     train_only = train_days[:-val_days]
 
@@ -215,13 +226,14 @@ def run_experiment(
     else:
         h_slots = (CONTEXT_BEFORE + 1 + CONTEXT_AFTER) * SLOTS_PER_HOUR
 
-    norm_mean, norm_std = compute_norm(day_lag0, day_lag1, day_lag2, train_only)
+    norm_mean, norm_std = compute_norm(day_boundary, day_history, day_actual, train_only)
     tgt_stack = np.stack([day_targets[d] for d in train_only if d in day_targets])
     y_mean = float(tgt_stack.mean())
     y_std = float(tgt_stack.std()) + 1e-8
 
     ds_kwargs = dict(
-        day_lag0=day_lag0, day_lag1=day_lag1, day_lag2=day_lag2, day_targets=day_targets,
+        day_boundary=day_boundary, day_history=day_history, day_actual=day_actual,
+        day_targets=day_targets,
         norm_mean=norm_mean, norm_std=norm_std, y_mean=y_mean, y_std=y_std,
         c_total=c_total, steps_per_day=steps_per_day, freq=freq,
     )
@@ -292,9 +304,10 @@ def run_experiment(
     )
 
     metrics = {
-        "market": cfg.market_id,
+        "market": market_id,
         "algorithm": "conv2d_multitask",
         "freq": freq,
+        "target": resolved.target,
         "test_start": str(test_d0),
         "test_end": str(test_d1),
         "n_train_samples": len(train_ds),
@@ -318,10 +331,12 @@ def run_experiment(
         "test_rmse": round(rmse, 3),
         "test_profile_corr": round(profile_corr, 4) if not np.isnan(profile_corr) else None,
         "test_dir_acc": round(test_dir_acc, 4),
+        "feature_spec": resolved.to_dict(),         # 用于追溯
+        "stream_cols": stream_cols,
     }
     logger.info(
         "Conv2D-MultiTask | %s [%s]  test_MAE=%.2f  RMSE=%.2f  profile_corr=%.3f  dir_acc=%.3f",
-        cfg.market_id, freq, mae, rmse, profile_corr if not np.isnan(profile_corr) else -1.0,
+        market_id, freq, mae, rmse, profile_corr if not np.isnan(profile_corr) else -1.0,
         test_dir_acc,
     )
     return {

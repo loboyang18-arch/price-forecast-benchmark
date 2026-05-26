@@ -20,16 +20,18 @@ ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT))
 
 from pfbench.data import load_market_data
+from pfbench.feature_registry import FeatureSpec, load_feature_registry
 from pfbench.market_config import get_market_split
 from pfbench.plotting import plot_weekly_predictions
 
-from algorithms.conv2d_multitask.config import MARKET_CONFIGS
 from algorithms.conv2d_multitask.train import (
     DEFAULT_BATCH_SIZE,
     DEFAULT_EPOCHS,
     DEFAULT_LR,
     run_experiment,
 )
+
+SUPPORTED_MARKETS = ["neimeng", "chongqing", "jiangsu"]
 
 
 def _setup_logging(verbose: bool) -> None:
@@ -43,24 +45,28 @@ def _setup_logging(verbose: bool) -> None:
 def run_single_market(
     market_id: str, output_root: Path, freq: str,
     epochs: int, batch_size: int, lr: float, val_days: int,
+    target: str = None,
+    groups: list = None,
 ) -> dict:
-    cfg = MARKET_CONFIGS[market_id]
+    reg = load_feature_registry(market_id)
     split = get_market_split(market_id)
     test_start = pd.Timestamp(split.test_start)
     test_end = pd.Timestamp(split.test_end)
     algo_dir = "conv2d_multitask_15min" if freq == "15min" else "conv2d_multitask"
     out_dir = output_root / market_id / algo_dir
     out_dir.mkdir(parents=True, exist_ok=True)
+    spec = FeatureSpec(target=target, groups=groups)
     print(f"\n{'=' * 60}")
-    print(f"  {market_id} [{freq}] → target={cfg.target_col}")
+    print(f"  {market_id} [{freq}] → target={target or reg.target_default}")
     print(f"  test_start={test_start.date()}  test_end={test_end.date()}")
     print(f"  out_dir={out_dir}")
     print(f"{'=' * 60}")
 
     df, meta = load_market_data(market_id)
     result = run_experiment(
-        df, cfg, test_start=test_start, test_end=test_end,
-        freq=freq, epochs=epochs, batch_size=batch_size, lr=lr,
+        df, market_id, test_start=test_start, test_end=test_end,
+        freq=freq, spec=spec,
+        epochs=epochs, batch_size=batch_size, lr=lr,
         val_days=val_days,
     )
 
@@ -95,7 +101,7 @@ def run_single_market(
         algo_label = "Conv2D-MultiTask-15min" if freq == "15min" else "Conv2D-MultiTask"
         plots = plot_weekly_predictions(
             pred_df, plot_dir, market_id, algo_label,
-            target_col=cfg.target_col, freq=freq,
+            target_col=metrics["target"], freq=freq,
         )
         print(f"  图表 → {plot_dir}/ ({len(plots)} 张)")
 
@@ -108,6 +114,10 @@ def main() -> None:
                     help="市场 ID（逗号分隔）或 all")
     ap.add_argument("--freq", choices=["1h", "15min"], default="1h",
                     help="预测粒度：1h（默认）或 15min")
+    ap.add_argument("--target", default=None,
+                    help="覆盖默认 target；必须在该市场 yaml 的 alt_targets 中")
+    ap.add_argument("--groups", default=None,
+                    help="逗号分隔的 feature groups（默认使用 yaml 中 enabled=true 的类别）")
     ap.add_argument("--epochs", type=int, default=DEFAULT_EPOCHS)
     ap.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE)
     ap.add_argument("--lr", type=float, default=DEFAULT_LR)
@@ -121,21 +131,26 @@ def main() -> None:
     _setup_logging(args.verbose)
 
     if args.market == "all":
-        targets = list(MARKET_CONFIGS.keys())
+        targets = list(SUPPORTED_MARKETS)
     else:
         targets = [m.strip() for m in args.market.split(",")]
+
+    groups = None
+    if args.groups:
+        groups = [g.strip() for g in args.groups.split(",") if g.strip()]
 
     failed = []
     results = []
     for mid in targets:
-        if mid not in MARKET_CONFIGS:
-            print(f"未知市场: {mid}，可选 {list(MARKET_CONFIGS.keys())}")
+        if mid not in SUPPORTED_MARKETS:
+            print(f"未知市场: {mid}，可选 {SUPPORTED_MARKETS}")
             failed.append(mid)
             continue
         try:
             metrics = run_single_market(
                 mid, args.output_root, args.freq,
                 args.epochs, args.batch_size, args.lr, args.val_days,
+                target=args.target, groups=groups,
             )
             results.append(metrics)
         except Exception as e:

@@ -249,17 +249,18 @@ def _add_actual_features(
     re_cols_actual = []
     load_actual_vals = None
 
-    for orig, short in cfg.actual_cols.items():
+    for orig in cfg.actual_cols:
         if orig not in prev.columns:
             continue
+        short = _short_name(orig)
         vals = prev[orig].values
         row[f"{short}_dm1_mean"] = np.nanmean(vals)
         row[f"{short}_dm1_std"] = np.nanstd(vals)
         row[f"{short}_dm1_same_hh"] = vals[step_idx]
 
-        if "load" in short:
+        if "load" in orig.lower():
             load_actual_vals = vals
-        if any(k in short for k in ["re_", "wind", "solar", "pv"]):
+        if any(k in orig.lower() for k in ["wind", "solar", "pv", "renewable"]):
             re_cols_actual.append(vals)
 
     if re_cols_actual:

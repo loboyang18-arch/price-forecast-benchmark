@@ -1,75 +1,114 @@
 """Conv2D-MultiTask — 数据准备与 Dataset。
 
-按日切成 96×15min，构建 lag0/lag1/lag2 + 时间编码张量；
-按 (date, slot) 构建样本，输入形状 (C, H_SLOTS, LOOKBACK_DAYS)：
-  - 1h 模式：H_SLOTS = (CONTEXT_BEFORE + 1 + CONTEXT_AFTER) * 4
-  - 15min 模式：H_SLOTS = SLOTS_BEFORE + 1 + SLOTS_AFTER
+按日切成 96×15min，按 feature_registry 中的 ``BOUNDARY / CLEARING_* / ACTUAL`` 类别
+组成 3 个 stream（事前 / 历史价 / 实际值），每个 stream 7 天回看：
+
+  stream_boundary: 列 = BOUNDARY + BOUNDARY_CLEARED + WEATHER + 4 时间编码
+  stream_history:  列 = CLEARING_DA + CLEARING_RT
+  stream_actual:   列 = ACTUAL
+
+按 (date, slot/hour) 构建样本，输入形状 (C, H_SLOTS, LOOKBACK_DAYS)：
+  - 1h 模式：H_SLOTS = (CONTEXT_BEFORE + 1 + CONTEXT_AFTER) * 4 = 12
+  - 15min 模式：H_SLOTS = SLOTS_BEFORE + 1 + SLOTS_AFTER = 12
+
+时间相位（避免未来泄漏）：
+  - boundary stream 取 [D-6, D]（D 日 BOUNDARY 列在 D-1 末已可知，是 lag0）
+  - history  stream 取 [D-7, D-1]（D 日的历史价 → shift 1d 起）
+  - actual   stream 取 [D-8, D-2]（D 日的实际值 → shift 2d 起）
 """
 from __future__ import annotations
 
 import logging
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 import numpy as np
 import pandas as pd
 import torch
 from torch.utils.data import Dataset
 
+from pfbench.feature_registry import ResolvedSpec
+
 from .config import (
     CONTEXT_AFTER,
     CONTEXT_BEFORE,
     LOOKBACK_DAYS,
-    MarketConfig,
     N_TIME_ENC,
     SLOTS_AFTER,
     SLOTS_BEFORE,
     SLOTS_PER_DAY,
     SLOTS_PER_HOUR,
+    STREAM_ACTUAL,
+    STREAM_BOUNDARY,
+    STREAM_DAY_OFFSET,
+    STREAM_HISTORY,
 )
 
 logger = logging.getLogger(__name__)
 
 
+def _resolve_stream_cols(spec: ResolvedSpec) -> Dict[str, List[str]]:
+    """从 ResolvedSpec 中按 conv2d 的 3-stream 语义聚合列名。"""
+    def collect(group_names):
+        out = []
+        for n in group_names:
+            g = spec.groups.get(n)
+            if g is None:
+                continue
+            for c in g.cols:
+                if c not in out:
+                    out.append(c)
+        return out
+
+    return {
+        "boundary": collect(STREAM_BOUNDARY),
+        "history":  collect(STREAM_HISTORY),
+        "actual":   collect(STREAM_ACTUAL),
+    }
+
+
 def build_daily_arrays(
-    df_15min: pd.DataFrame, cfg: MarketConfig, freq: str = "1h",
-) -> Tuple[List, Dict, Dict, Dict, Dict, int, int]:
-    """从 15min 长表构建按日切片字典。
+    df_15min: pd.DataFrame, spec: ResolvedSpec, freq: str = "1h",
+) -> Tuple[List, Dict, Dict, Dict, Dict, int, int, Dict[str, List[str]]]:
+    """从 15min 长表按 feature_registry 类别构建按日切片字典。
 
     Returns:
         valid_dates: 有完整 target 的日期列表
-        day_lag0: {date: (96, C_LAG0_RAW + N_TIME_ENC) ndarray}
-        day_lag1: {date: (96, C_LAG1) ndarray}
-        day_lag2: {date: (96, C_LAG2) ndarray}
-        day_targets: {date: (steps_per_day,) ndarray}  (steps_per_day=24 for 1h, 96 for 15min)
-        c_total: 总通道数 = len(lag0) + N_TIME_ENC + len(lag1) + len(lag2)
+        day_boundary: {date: (96, C_BOUNDARY + N_TIME_ENC) ndarray}
+        day_history:  {date: (96, C_HISTORY) ndarray}
+        day_actual:   {date: (96, C_ACTUAL) ndarray}
+        day_targets: {date: (steps_per_day,) ndarray}
+        c_total: 总通道数 = C_BOUNDARY + N_TIME_ENC + C_HISTORY + C_ACTUAL
         steps_per_day: 24 或 96
+        stream_cols: {"boundary": [...], "history": [...], "actual": [...]}（含 time_enc 已加在 boundary）
     """
     df = df_15min.sort_index()
     start = df.index.min().normalize().date()
     end = df.index.max().date()
     date_range = pd.date_range(start, end, freq="D")
 
-    lag0_present = [c for c in cfg.lag0_cols if c in df.columns]
-    lag1_present = [c for c in cfg.lag1_cols if c in df.columns]
-    lag2_present = [c for c in cfg.lag2_cols if c in df.columns]
-    missing_lag0 = set(cfg.lag0_cols) - set(lag0_present)
-    missing_lag1 = set(cfg.lag1_cols) - set(lag1_present)
-    missing_lag2 = set(cfg.lag2_cols) - set(lag2_present)
-    if missing_lag0 or missing_lag1 or missing_lag2:
-        logger.warning(
-            "%s: 缺失列 lag0=%s lag1=%s lag2=%s",
-            cfg.market_id, missing_lag0, missing_lag1, missing_lag2,
-        )
+    stream_cols = _resolve_stream_cols(spec)
+    boundary_cols_present = [c for c in stream_cols["boundary"] if c in df.columns]
+    history_cols_present = [c for c in stream_cols["history"] if c in df.columns]
+    actual_cols_present = [c for c in stream_cols["actual"] if c in df.columns]
+    target_col = spec.target
 
-    c_lag0 = len(lag0_present) + N_TIME_ENC
-    c_lag1 = len(lag1_present)
-    c_lag2 = len(lag2_present)
-    c_total = c_lag0 + c_lag1 + c_lag2
+    missing = (set(stream_cols["boundary"]) | set(stream_cols["history"]) | set(stream_cols["actual"])) - set(
+        boundary_cols_present + history_cols_present + actual_cols_present
+    )
+    if missing:
+        logger.warning("%s: 数据中缺失列（已跳过）: %s", spec.market_id, sorted(missing))
+    if target_col not in df.columns:
+        raise ValueError(f"{spec.market_id}: target {target_col!r} 不在数据集中")
+
+    c_boundary = len(boundary_cols_present) + N_TIME_ENC
+    c_history = len(history_cols_present)
+    c_actual = len(actual_cols_present)
+    c_total = c_boundary + c_history + c_actual
     steps_per_day = SLOTS_PER_DAY if freq == "15min" else 24
 
-    day_lag0: Dict = {}
-    day_lag1: Dict = {}
-    day_lag2: Dict = {}
+    day_boundary: Dict = {}
+    day_history: Dict = {}
+    day_actual: Dict = {}
     day_targets: Dict = {}
     valid: List = []
 
@@ -80,8 +119,8 @@ def build_daily_arrays(
         if raw.isna().to_numpy().all():
             continue
 
-        l0 = (raw[lag0_present].values.astype(np.float32)
-              if lag0_present else np.zeros((SLOTS_PER_DAY, 0), dtype=np.float32))
+        l0 = (raw[boundary_cols_present].values.astype(np.float32)
+              if boundary_cols_present else np.zeros((SLOTS_PER_DAY, 0), dtype=np.float32))
         steps = np.arange(SLOTS_PER_DAY, dtype=np.float32)
         dow = float(pd.Timestamp(d).dayofweek)
         te = np.column_stack([
@@ -90,15 +129,13 @@ def build_daily_arrays(
             np.full(SLOTS_PER_DAY, np.sin(2 * np.pi * dow / 7), dtype=np.float32),
             np.full(SLOTS_PER_DAY, np.cos(2 * np.pi * dow / 7), dtype=np.float32),
         ])
-        day_lag0[d] = np.concatenate([l0, te], axis=1).astype(np.float32)
-        day_lag1[d] = (raw[lag1_present].values.astype(np.float32)
-                       if lag1_present else np.zeros((SLOTS_PER_DAY, 0), dtype=np.float32))
-        day_lag2[d] = (raw[lag2_present].values.astype(np.float32)
-                       if lag2_present else np.zeros((SLOTS_PER_DAY, 0), dtype=np.float32))
+        day_boundary[d] = np.concatenate([l0, te], axis=1).astype(np.float32)
+        day_history[d] = (raw[history_cols_present].values.astype(np.float32)
+                          if history_cols_present else np.zeros((SLOTS_PER_DAY, 0), dtype=np.float32))
+        day_actual[d] = (raw[actual_cols_present].values.astype(np.float32)
+                         if actual_cols_present else np.zeros((SLOTS_PER_DAY, 0), dtype=np.float32))
 
-        if cfg.target_col not in raw.columns:
-            continue
-        tgt_96 = raw[cfg.target_col].values.astype(np.float32)
+        tgt_96 = raw[target_col].values.astype(np.float32)
 
         if freq == "15min":
             if np.isfinite(tgt_96).all():
@@ -112,11 +149,18 @@ def build_daily_arrays(
 
     valid = sorted(valid)
     logger.info(
-        "%s [%s]: %d 个日历日，%d 天有有效 target，C_total=%d (lag0=%d+%d_te, lag1=%d, lag2=%d)",
-        cfg.market_id, freq, len(day_lag0), len(valid),
-        c_total, len(lag0_present), N_TIME_ENC, c_lag1, c_lag2,
+        "%s [%s, freq=%s]: %d 日历日，%d 天有 target；通道 c_total=%d "
+        "(boundary=%d+%d_te, history=%d, actual=%d)",
+        spec.market_id, target_col, freq, len(day_boundary), len(valid),
+        c_total, len(boundary_cols_present), N_TIME_ENC, c_history, c_actual,
     )
-    return valid, day_lag0, day_lag1, day_lag2, day_targets, c_total, steps_per_day
+    resolved_stream_cols = {
+        "boundary": boundary_cols_present + ["_te_slot_sin", "_te_slot_cos", "_te_dow_sin", "_te_dow_cos"],
+        "history": history_cols_present,
+        "actual": actual_cols_present,
+    }
+    return (valid, day_boundary, day_history, day_actual, day_targets,
+            c_total, steps_per_day, resolved_stream_cols)
 
 
 def _hour_four_slots(arr: np.ndarray, hh: int) -> np.ndarray:
@@ -184,13 +228,13 @@ def _get_context_slots(day_arrays: Dict, center_d, slot_idx: int) -> np.ndarray:
 
 
 def compute_norm(
-    day_lag0: Dict, day_lag1: Dict, day_lag2: Dict, train_days: List,
+    day_boundary: Dict, day_history: Dict, day_actual: Dict, train_days: List,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """训练集均值方差归一化参数。"""
     rows = []
     for d in train_days:
-        if d in day_lag0 and d in day_lag1 and d in day_lag2:
-            row = np.concatenate([day_lag0[d], day_lag1[d], day_lag2[d]], axis=1)
+        if d in day_boundary and d in day_history and d in day_actual:
+            row = np.concatenate([day_boundary[d], day_history[d], day_actual[d]], axis=1)
             rows.append(row)
     stack = np.concatenate(rows, axis=0)
     mean = np.nanmean(stack, axis=0).astype(np.float32)
@@ -199,12 +243,16 @@ def compute_norm(
 
 
 class Conv2dDataset(Dataset):
-    """按 (date, slot/hour) 一个样本 → (C, H_SLOTS, LOOKBACK_DAYS) + 归一化 target + 方向标签。"""
+    """按 (date, slot/hour) 一个样本 → (C, H_SLOTS, LOOKBACK_DAYS) + 归一化 target + 方向标签。
+
+    boundary / history / actual 三个 stream 各自按相应的"时间相位"取 7 天回看窗口，
+    保证 D 日预测时只使用 D-1 末（含）之前的信息。
+    """
 
     def __init__(
         self,
         sample_dates: List,
-        day_lag0: Dict, day_lag1: Dict, day_lag2: Dict, day_targets: Dict,
+        day_boundary: Dict, day_history: Dict, day_actual: Dict, day_targets: Dict,
         norm_mean: np.ndarray, norm_std: np.ndarray,
         y_mean: float, y_std: float,
         c_total: int, steps_per_day: int, freq: str,
@@ -214,23 +262,28 @@ class Conv2dDataset(Dataset):
         self.items: List[Tuple[np.ndarray, float, int]] = []
         self.meta: List[Tuple[object, int]] = []
 
-        a0 = set(day_lag0.keys())
-        a1 = set(day_lag1.keys())
-        a2 = set(day_lag2.keys())
+        a_b = set(day_boundary.keys())
+        a_h = set(day_history.keys())
+        a_a = set(day_actual.keys())
+
+        off_b = STREAM_DAY_OFFSET["boundary"]
+        off_h = STREAM_DAY_OFFSET["history"]
+        off_a = STREAM_DAY_OFFSET["actual"]
 
         for d in sample_dates:
             if d not in day_targets:
                 continue
-            dates0 = [(pd.Timestamp(d) - pd.Timedelta(days=off)).date()
-                      for off in range(LOOKBACK_DAYS - 1, -1, -1)]
-            dates1 = [(pd.Timestamp(d) - pd.Timedelta(days=off)).date()
-                      for off in range(LOOKBACK_DAYS, 0, -1)]
-            dates2 = [(pd.Timestamp(d) - pd.Timedelta(days=off)).date()
-                      for off in range(LOOKBACK_DAYS + 1, 1, -1)]
+            # 三个 stream 的 7 天回看，按相位偏移
+            dates_b = [(pd.Timestamp(d) - pd.Timedelta(days=off_b + k)).date()
+                       for k in range(LOOKBACK_DAYS - 1, -1, -1)]
+            dates_h = [(pd.Timestamp(d) - pd.Timedelta(days=off_h + k)).date()
+                       for k in range(LOOKBACK_DAYS - 1, -1, -1)]
+            dates_a = [(pd.Timestamp(d) - pd.Timedelta(days=off_a + k)).date()
+                       for k in range(LOOKBACK_DAYS - 1, -1, -1)]
 
-            if not (all(dd in a0 for dd in dates0)
-                    and all(dd in a1 for dd in dates1)
-                    and all(dd in a2 for dd in dates2)):
+            if not (all(dd in a_b for dd in dates_b)
+                    and all(dd in a_h for dd in dates_h)
+                    and all(dd in a_a for dd in dates_a)):
                 continue
 
             d_prev = (pd.Timestamp(d) - pd.Timedelta(days=1)).date()
@@ -239,13 +292,13 @@ class Conv2dDataset(Dataset):
                 layers = []
                 for k in range(LOOKBACK_DAYS):
                     if freq == "15min":
-                        s0 = _get_context_slots(day_lag0, dates0[k], idx)
-                        s1 = _get_context_slots(day_lag1, dates1[k], idx)
-                        s2 = _get_context_slots(day_lag2, dates2[k], idx)
+                        s0 = _get_context_slots(day_boundary, dates_b[k], idx)
+                        s1 = _get_context_slots(day_history, dates_h[k], idx)
+                        s2 = _get_context_slots(day_actual, dates_a[k], idx)
                     else:
-                        s0 = _get_hour_slots(day_lag0, dates0[k], idx)
-                        s1 = _get_hour_slots(day_lag1, dates1[k], idx)
-                        s2 = _get_hour_slots(day_lag2, dates2[k], idx)
+                        s0 = _get_hour_slots(day_boundary, dates_b[k], idx)
+                        s1 = _get_hour_slots(day_history, dates_h[k], idx)
+                        s2 = _get_hour_slots(day_actual, dates_a[k], idx)
                     layers.append(np.concatenate([s0, s1, s2], axis=1))
 
                 grid = np.stack(layers, axis=-1).transpose(1, 0, 2)  # (C, H_SLOTS, LOOKBACK)

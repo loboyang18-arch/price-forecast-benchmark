@@ -17,10 +17,13 @@ ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT))
 
 from pfbench.data import load_market_data
+from pfbench.feature_registry import FeatureSpec, resolve_columns
 from pfbench.market_config import get_market_split
 
-from algorithms.lightgbm_baseline.config import MARKET_CONFIGS
+from algorithms.lightgbm_baseline.config import MarketConfig
 from algorithms.lightgbm_baseline.train import run_experiment
+
+SUPPORTED_MARKETS = ["neimeng", "chongqing", "jiangsu"]
 
 
 def _setup_logging(verbose: bool) -> None:
@@ -42,6 +45,14 @@ def main() -> None:
         help="预测粒度：1h（默认）或 15min",
     )
     ap.add_argument(
+        "--target", default=None,
+        help="覆盖默认 target；必须在该市场 yaml 的 alt_targets 中",
+    )
+    ap.add_argument(
+        "--groups", default=None,
+        help="逗号分隔的 feature groups（默认使用 yaml 中 enabled=true 的类别）",
+    )
+    ap.add_argument(
         "--output-root", type=Path,
         default=ROOT / "runs" / "predictions",
     )
@@ -51,24 +62,31 @@ def main() -> None:
     _setup_logging(args.verbose)
 
     if args.market == "all":
-        targets = list(MARKET_CONFIGS.keys())
+        targets = list(SUPPORTED_MARKETS)
     else:
         targets = [m.strip() for m in args.market.split(",")]
+
+    groups = None
+    if args.groups:
+        groups = [g.strip() for g in args.groups.split(",") if g.strip()]
 
     failed = []
     results = []
     for mid in targets:
-        if mid not in MARKET_CONFIGS:
-            print(f"未知市场: {mid}，可选 {list(MARKET_CONFIGS.keys())}")
+        if mid not in SUPPORTED_MARKETS:
+            print(f"未知市场: {mid}，可选 {SUPPORTED_MARKETS}")
             failed.append(mid)
             continue
 
-        cfg = MARKET_CONFIGS[mid]
+        spec = FeatureSpec(target=args.target, groups=groups)
+        resolved = resolve_columns(mid, spec, freq=args.freq)
+        cfg = MarketConfig.from_resolved_spec(resolved)
         split = get_market_split(mid)
         algo_dir = "lightgbm_baseline_15min" if args.freq == "15min" else "lightgbm_baseline"
         out_dir = args.output_root / mid / algo_dir
         print(f"\n{'='*60}")
         print(f"  {mid} [{args.freq}] → target={cfg.target_col}, test_start={split.test_start}")
+        print(f"  feature_groups: { {n: len(g.cols) for n, g in resolved.groups.items()} }")
         print(f"{'='*60}")
 
         try:
@@ -77,6 +95,7 @@ def main() -> None:
                 df, cfg, out_dir,
                 test_start=split.test_start, test_end=split.test_end,
                 freq=args.freq,
+                feature_spec=resolved.to_dict(),
             )
             results.append(metrics)
             print(f"  MAE={metrics['mae']:.4f}  RMSE={metrics['rmse']:.4f}  "
