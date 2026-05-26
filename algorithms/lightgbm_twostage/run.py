@@ -31,7 +31,7 @@ from pfbench.feature_registry import FeatureSpec, resolve_columns
 from pfbench.market_config import get_market_split
 
 from algorithms.lightgbm_twostage.config import MarketConfig
-from algorithms.lightgbm_twostage.cv import (
+from algorithms.lightgbm_twostage.train import (
     TrainConfig,
     compute_baselines,
     single_pass_predict,

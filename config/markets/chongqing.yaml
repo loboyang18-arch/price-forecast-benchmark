@@ -18,6 +18,21 @@ data:
   freq: 15min
   time_range: ["2025-11-01 00:00:00", "2026-04-13 23:45:00"]
 
+storage:
+  station_name: hongjing_220kv1m
+  settlement_price_col: market_clearing_price
+  battery:
+    p_max_mw: 200
+    cap_mwh: 400
+    max_charge_mwh: 600
+    eta_rt: 0.910
+    aux_mwh: 13.03
+    dp_ramp_mw: 66.67
+    l_min: 4
+    cap_comp_per_mwh: 280
+    comp_mode: in_objective
+    carry_soc: false
+
 notes: |
   15min 真源含 81 列（市场 + 天气）。
   market_clearing_price 从 2025-11 起有值，之前全 NaN。

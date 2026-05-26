@@ -28,7 +28,7 @@ ACTUAL_GROUPS = ("ACTUAL",)
 
 @dataclass
 class MarketConfig:
-    """LightGBM-TwoStage 在 features.py / cv.py 内部使用的特征视图。"""
+    """LightGBM-TwoStage 在 features.py / train.py 内部使用的特征视图。"""
 
     market_id: str
     target_col: str

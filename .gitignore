@@ -22,5 +22,8 @@ runs/data/**/*.csv
 !runs/data/manifest.json
 !runs/data/**/meta.yaml
 
+# 日志目录（实验输出，不入库）
+logs/
+
 # 旧路径（迁移期保留忽略规则）
 output/*

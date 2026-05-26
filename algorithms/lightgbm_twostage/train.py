@@ -1,12 +1,7 @@
-"""LightGBM-TwoStage — 单次训练-预测流水线。
+"""LightGBM-TwoStage — 单次训练-预测（与 lightgbm_baseline/train.py 口径对齐）。
 
-历史：此前使用 Expanding Window CV（多折滑动），与其他算法的"一次训练一次预测"
-口径不一致，且会导致 metrics.json 里出现 cv_folds/folds 等其他算法没有的字段，
-使横向比较口径不齐。
-
-2026-05-26 起改为单次训练-预测，与 `lightgbm_baseline` / `conv2d_multitask`
-对齐：所有 < test_start 的样本做训练（末尾 val_days 天作 val 用于早停 + 后处理调参），
-[test_start, test_end] 全部一次性预测。
+< test_start 的样本用于训练，末尾 val_days 天作 val（早停 + 后处理调参），
+[test_start, test_end] 一次性预测。
 """
 from __future__ import annotations
 

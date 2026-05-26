@@ -12,6 +12,7 @@ PIPELINES_DIR = CONFIG_DIR / "pipelines"
 RUNS_DIR = ROOT / "runs"
 BENCHMARK_RUNS_DIR = RUNS_DIR / "benchmark"
 LOCAL_PREDICTIONS_DIR = RUNS_DIR / "predictions"
+STORAGE_RUNS_DIR = RUNS_DIR / "storage"
 # 统一冻结数据集（runs/data/<market>/<version>/）
 DATA_DIR = RUNS_DIR / "data"
 

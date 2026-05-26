@@ -2,7 +2,7 @@
 
 > 本文档由每次实验完成后自动更新，记录所有算法在各市场的横向比较结果。
 >
-> 最后更新：2026-05-26（LightGBM-TwoStage 弃用 Expanding Window CV，改为与其他算法一致的"单次训练-预测"口径，6 实验重跑）
+> 最后更新：2026-05-26（储能评估补充 hourly 平铺口径 + §8bis / §8c 横向对比）
 
 ---
 
@@ -24,29 +24,30 @@
 
 ### 2.1 MAE 对比（元/MWh）
 
-| 市场 | 默认 target | LightGBM-Baseline | LightGBM-TwoStage | Conv2D-MultiTask | 最优 |
-|------|-------------|-------------------|-------------------|-------------------|------|
-| 内蒙古 | 红井节点价 | 134.19 | **107.96** | 113.12 | TwoStage |
-| 重庆 | 日前出清价 | 95.47 | 92.46 | **89.17** | Conv2D (−6.6% vs Baseline) |
-| 江苏 | 江南节点价 | 83.91 | **74.08** | 90.18 | TwoStage |
+| 市场 | 默认 target | LightGBM-Baseline | LightGBM-TwoStage | Conv2D-MultiTask | ResConv2D | 最优 |
+|------|-------------|-------------------|-------------------|-------------------|-----------|------|
+| 内蒙古 | 红井节点价 | 134.19 | **107.96** | 113.12 | 120.01 | TwoStage |
+| 重庆 | 日前出清价 | 95.47 | 92.46 | **89.17** | — | Conv2D (−6.6% vs Baseline) |
+| 江苏 | 江南节点价 | 83.91 | **74.08** | 90.18 | — | TwoStage |
 
 > TwoStage 2026-05-26 起改为单次训练-预测（弃用 CV 多折），详见 §3.2 / §4.6。
+> ResConv2D（v25 移植）2026-05-26 引入，目前仅完成内蒙单市场（aggressive depth + 80 epochs），其他市场列待补；详见 §3.6 / §4.7。
 
 ### 2.2 RMSE 对比（元/MWh）
 
-| 市场 | LightGBM-Baseline | LightGBM-TwoStage | Conv2D-MultiTask | 最优 |
-|------|-------------------|-------------------|-------------------|------|
-| 内蒙古 | 165.49 | **155.60** | 162.75 | TwoStage |
-| 重庆 | 169.96 | 168.08 | **164.30** | Conv2D |
-| 江苏 | 105.49 | **91.75** | 114.45 | TwoStage |
+| 市场 | LightGBM-Baseline | LightGBM-TwoStage | Conv2D-MultiTask | ResConv2D | 最优 |
+|------|-------------------|-------------------|-------------------|-----------|------|
+| 内蒙古 | 165.49 | **155.60** | 162.75 | 173.76 | TwoStage |
+| 重庆 | 169.96 | 168.08 | **164.30** | — | Conv2D |
+| 江苏 | 105.49 | **91.75** | 114.45 | — | TwoStage |
 
 ### 2.3 Profile Correlation 对比
 
-| 市场 | LightGBM-Baseline | LightGBM-TwoStage | Conv2D-MultiTask | 最优 |
-|------|-------------------|-------------------|-------------------|------|
-| 内蒙古 | 0.6468 | 0.5938 | **0.7191** | Conv2D |
-| 重庆 | 0.0597 | 0.0432 | **0.2015** | Conv2D |
-| 江苏 | 0.5532 | 0.6592 | **0.7114** | Conv2D |
+| 市场 | LightGBM-Baseline | LightGBM-TwoStage | Conv2D-MultiTask | ResConv2D | 最优 |
+|------|-------------------|-------------------|-------------------|-----------|------|
+| 内蒙古 | 0.6468 | 0.5938 | **0.7191** | 0.6903 | Conv2D |
+| 重庆 | 0.0597 | 0.0432 | **0.2015** | — | Conv2D |
+| 江苏 | 0.5532 | 0.6592 | **0.7114** | — | Conv2D |
 
 > **新发现**：弃用 CV 后，**三市场 Profile Corr 全部由 Conv2D 拿下第一**。CV 版本里 TwoStage 江苏 corr=0.7466 之所以高，是因为每折只评估未来 7 天（close-in-time），日级形态相似度被放大；改为 single-pass 一次预测整段后，"远期形态衰减"显现。Conv2D 端到端学时空模式的优势在统一口径下被凸显出来。
 
@@ -295,6 +296,41 @@
 
 > **`profile_corr` 口径差异**：算法内部计算的是"全测试集合并相关性"，而 `extended_metrics.shape_metrics.profile_corr` 是"按日相关再求均值"，后者是形态指标的更严格口径；两者都保留以便兼容。
 
+### 3.6 ResConv2D（v25 移植，2026-05-26 引入）
+
+- **代码**：`algorithms/resconv2d/`，vendored from `neimeng_prj/src/model_v25_{resconv,deep_resconv}.py`
+- **网络结构**：10+ 层 ResBlock 双头深网（共享 trunk）
+  - `stem` Conv2d(3×3, GELU) → res64×n₆₄ → MaxPool(2,1) → trans 64→128 → res128×n₁₂₈ → MaxPool(2,1) → final1(3×3,pad=0) → final2(3×3,pad=0) → 两个独立 head（价格 + Δ价）
+  - **aggressive 档**：n₆₄=2, n₁₂₈=6, head_hidden=512 → **2.52M 参数**（v25 最优配置）
+  - base 档：n₆₄=1, n₁₂₈=2, head_hidden=128 → ~0.96M 参数
+- **输入张量**：(B, C, H_SLOTS=24, LOOKBACK=7)。CTX_BEFORE=5/CTX_AFTER=0 → H_SLOTS=24（比 Conv2D-MultiTask 的 12 大 2×，给加深网络留足池化空间）
+- **双头损失**：`L = L1(price) + λ·L1(Δprice)`，λ=0.2；Δprice 是邻时段差，首时段 anchor 取前一日末时段
+- **训练**：AdamW(lr=1e-3, wd=1e-4) + LinearLR warmup(10ep) + CosineAnnealingLR → 1e-6，grad_clip=1.0，dropout=0.44，bs=64，**末轮权重**（v25 原版 `V25_EARLY_STOP=0` 同口径）
+- **复现命令**：`python algorithms/resconv2d/run.py --market neimeng --freq 1h --depth aggressive --epochs 80`
+- **目录**：`runs/predictions/<market>/resconv2d/`（1h）。15min 版本因 H_SLOTS 几何约束（需 ≥20）暂未启用，留作 future work
+
+| 市场 | 粒度 | depth | 参数量 | MAE | RMSE | Profile Corr | 训练样本 | C / H_SLOTS | best_val / best_ep |
+|------|------|-------|--------|-----|------|--------------|----------|-------------|---------------------|
+| 内蒙古 | 1h | aggressive | 2.52M | **120.01** | 173.76 | 0.6903 | 8736 | 25 / 24 | 99.83 / ep45 |
+
+**与已有算法的位置（内蒙 1h）**：
+
+| 算法 | MAE | RMSE | profile_corr | 参数量 |
+|---|---:|---:|---:|---:|
+| naive_rolling_7d_mean | 170.00 | — | 0.41 | 0 |
+| LightGBM-Baseline | 134.19 | 165.49 | 0.6468 | 树模型 |
+| LightGBM-TwoStage | **107.96** | **155.60** | 0.5938 | 树模型 |
+| Conv2D-MultiTask | 113.12 | 162.75 | 0.7191 | ~0.19M |
+| Conv2D-MultiTask-es | **105.31** | 153.37 | **0.7487** | ~0.19M |
+| **ResConv2D-aggressive** | 120.01 | 173.76 | 0.6903 | 2.52M |
+
+**初步观察**：
+
+1. **MAE 120.01 介于 Baseline 与 Conv2D 之间，略劣于 Conv2D（+6.1%）和 TwoStage（+11.2%）**。直接对照内蒙工程 v25-deep 在苏敦节点价的 MAE 121.5 / 105 天，本工程内蒙红井 81 天单市场结果在量级上对齐（target 不同所以不能直接相等）。
+2. **训练曲线显示过拟合**：train_mae 从 80 ep 末降到 4.8（接近记住训练集），而 val_mae 在 99.8 触底（ep45 best）后小幅抖动，test_mae 在 120 平台稳定。说明 2.5M 参数在 ~8.7k 样本上偏大，**早停 + restore_best 可能有 0~3 元改善空间**（best_ep 在 45 而非 79 末轮）。
+3. **profile_corr 0.69 比 Conv2D-MultiTask 的 0.72 略低**：双头 Δ价副任务并未带来形态优势，反而因 ResBlock 加深产生更强的局部拟合。
+4. **决策端表现见 §8bis 第 1 行**：含补偿净收益 1743.3 万 / 兑现率 65.6%，介于 naive_rolling 与 LightGBM-Baseline 之间，与 MAE 排名一致。
+
 ---
 
 ## 4. 分析与备注
@@ -527,10 +563,123 @@ cfg = MarketConfig.from_resolved_spec(resolved)
 
 ---
 
+## 8. 储能决策与收益评估（15min MILP）
+
+> 红井 2h 系统默认参数（200 MW / 400 MWh / 600 MWh 日充 / η=0.91 / 280 元/MWh 容量补偿入目标）。
+> 结算价：内蒙 `price_hongjing_220kv1m_nodal`，重庆 `market_clearing_price`，江苏 `price_realtime_jn_node_江南`。
+> 实现：`pfbench/storage/` + `scripts/run_storage_eval.py`；产物 `runs/storage/<market>/<algo>/`。
+> 求解器：scipy HiGHS（与 CBC 比较过，HiGHS 数值稳定、复跑一致；MIP gap=1e-4，时间限制 60s/天）。
+> 测试集天数：内蒙 81 天 / 重庆 86 天 / 江苏 76 天，按各市场 yaml 的 `test_start` / `test_end` 切分。
+
+### 8.1 含补偿净收益与兑现率（with_comp）
+
+| 市场 | naive_lag_1d | naive_rolling_7d | LightGBM-Baseline | LightGBM-TwoStage | Conv2D-MultiTask | **PF 上限** |
+|------|--------------|------------------|-------------------|-------------------|------------------|-------------|
+| 内蒙古 净收益(万) | 1622.3 | **1679.4** | 1796.9 | **1836.7** | 1741.6 | 2655.9 |
+| 内蒙古 兑现率 | 61.1% | 63.2% | 67.7% | **69.2%** | 65.6% | 100% |
+| 重庆 净收益(万) | 627.0 | **632.7** | 592.4 | 591.6 | 604.3 | 767.7 |
+| 重庆 兑现率 | 81.7% | **82.4%** | 77.2% | 77.1% | 78.7% | 100% |
+| 江苏 净收益(万) | 1141.6 | 1205.4 | 1175.5 | 1204.7 | **1258.0** | 1518.8 |
+| 江苏 兑现率 | 75.2% | 79.4% | 77.4% | 79.3% | **82.8%** | 100% |
+
+### 8.2 纯套利净收益（arbitrage，剥离 280 元/MWh 补偿）
+
+| 市场 | naive_lag_1d | naive_rolling_7d | LightGBM-Baseline | LightGBM-TwoStage | Conv2D-MultiTask | PF |
+|------|--------------|------------------|-------------------|-------------------|------------------|-----|
+| 内蒙古(万) | 384.0 | 441.1 | 558.6 | **598.4** | 503.3 | 1417.6 |
+| 重庆(万) | −15.1 | −9.4 | −49.7 | −50.5 | −37.8 | 125.6 |
+| 江苏(万) | 209.0 | 272.8 | 243.0 | 272.1 | **325.4** | 586.2 |
+
+### 8.3 分析要点
+
+1. **MAE 最低 ≠ 储能收益最高**：内蒙 TwoStage MAE 最优（§2bis），储能含补偿净收益也最高（1836.7 万 / 69.2% 兑现率）；但内蒙 Conv2D MAE 优于 Baseline，储能收益却低于 TwoStage（1741.6 vs 1836.7），说明**点预测精度与套利决策价值可分离**。
+2. **朴素策略并不总是最差**：内蒙 `naive_rolling_7d_mean`（1679.4 万）介于 Conv2D（1741.6 万）与 lag_1d（1622.3 万）之间；江苏 rolling naive（1205.4 万）接近 TwoStage（1204.7 万），高于 lag_1d（1141.6 万）。
+3. **重庆全体套利净利润为负**：节点价波动下预测驱动 MILP 难以仅靠价差套利（补偿前），但容量补偿（280 元/MWh×放电量）使 with_comp 仍为正；PF 套利上限仅 125.6 万，预测策略兑现率 77~82%。
+4. **§9.4 决策指标**：各算法 `metrics.json` 含 `decision_metrics.arbitrage` / `with_comp` 各 9 项（VaR/CVaR/最大回撤/Regret/Sharpe 等）。
+
+---
+
+## 8bis. 储能决策与收益评估（小时预测平铺）
+
+> 输入：`runs/predictions/<market>/<algo>/test_predictions_hourly.csv`（每天 24 点），运行时 `np.repeat(·, 4)` 平铺为 96 点喂给同一套 15min MILP。
+> 产物：`runs/storage/<market>/<algo>_hourly/`（与 15min 原生目录分开）；周图标题为 `pred(hourly)` 阶梯线。
+> 命令：`python scripts/run_storage_eval.py --market all --algorithm all --freq hourly`
+
+### 8bis.1 含补偿净收益与兑现率（with_comp）
+
+| 市场 | naive_lag_1d | naive_rolling_7d | LightGBM-Baseline | LightGBM-TwoStage | Conv2D-MultiTask | ResConv2D | **PF 上限** |
+|------|--------------|------------------|-------------------|-------------------|------------------|-----------|-------------|
+| 内蒙古 净收益(万) | 1657.3 | 1699.3 | 1789.3 | **1815.9** | 1813.7 | 1743.3 | 2655.9 |
+| 内蒙古 兑现率 | 62.4% | 64.0% | 67.4% | **68.4%** | 68.3% | 65.6% | 100% |
+| 重庆 净收益(万) | 607.5 | **613.0** | 550.4 | 563.3 | 609.7 | — | 767.7 |
+| 重庆 兑现率 | 79.1% | **79.8%** | 71.7% | 73.4% | 79.4% | — | 100% |
+| 江苏 净收益(万) | 1147.9 | 1187.5 | 1162.0 | 1203.7 | **1222.9** | — | 1518.8 |
+| 江苏 兑现率 | 75.6% | 78.2% | 76.5% | 79.2% | **80.5%** | — | 100% |
+
+### 8bis.2 纯套利净收益（arbitrage）
+
+| 市场 | naive_lag_1d | naive_rolling_7d | LightGBM-Baseline | LightGBM-TwoStage | Conv2D-MultiTask | ResConv2D | PF |
+|------|--------------|------------------|-------------------|-------------------|------------------|-----------|-----|
+| 内蒙古(万) | 418.9 | 461.0 | 551.0 | **577.6** | 575.4 | 505.0 | 1417.6 |
+| 重庆(万) | −34.6 | −29.1 | −91.7 | −78.8 | **−32.4** | — | 125.6 |
+| 江苏(万) | 215.3 | 255.0 | 229.5 | 271.1 | **290.3** | — | 586.2 |
+
+> ResConv2D 当前仅评估内蒙单市场；其他市场列待跑（标 —）。
+
+---
+
+## 8c. 15min 原生预测 vs 小时预测平铺 横向比较
+
+> 同一套 MILP / 同一份实际价 / 同一组算法，仅改输入预测的时间粒度。
+> PF 上限完全相同（与预测无关）：内蒙 2655.9 万 / 重庆 767.7 万 / 江苏 1518.8 万。
+
+### 8c.1 含补偿净收益对比（Δ = hourly − 15min；正值表示 hourly 平铺更优）
+
+| 市场 | 算法 | 15min 净收益(万) | hourly 净收益(万) | Δ(万) | Δ% |
+|------|------|------------------|-------------------|-------|-----|
+| 内蒙古 | naive_lag_1d | 1622.3 | 1657.3 | +35.0 | +2.2% |
+| 内蒙古 | naive_lag_7d | 1435.1 | 1449.3 | +14.2 | +1.0% |
+| 内蒙古 | naive_rolling_7d_mean | 1679.4 | 1699.3 | +19.9 | +1.2% |
+| 内蒙古 | LightGBM-Baseline | 1796.9 | 1789.3 | −7.6 | −0.4% |
+| 内蒙古 | **LightGBM-TwoStage** | **1836.7** | 1815.9 | **−20.8** | **−1.1%** |
+| 内蒙古 | **Conv2D-MultiTask** | 1741.6 | **1813.7** | **+72.1** | **+4.1%** |
+| 重庆 | naive_lag_1d | 627.0 | 607.5 | −19.5 | −3.1% |
+| 重庆 | naive_lag_7d | 594.3 | 578.8 | −15.5 | −2.6% |
+| 重庆 | naive_rolling_7d_mean | 632.7 | 613.0 | −19.7 | −3.1% |
+| 重庆 | LightGBM-Baseline | 592.4 | 550.4 | **−42.0** | **−7.1%** |
+| 重庆 | LightGBM-TwoStage | 591.6 | 563.3 | **−28.3** | **−4.8%** |
+| 重庆 | Conv2D-MultiTask | 604.3 | 609.7 | +5.4 | +0.9% |
+| 江苏 | naive_lag_1d | 1141.6 | 1147.9 | +6.3 | +0.6% |
+| 江苏 | naive_lag_7d | 1111.7 | 1112.0 | +0.3 | 0.0% |
+| 江苏 | naive_rolling_7d_mean | 1205.4 | 1187.5 | −17.9 | −1.5% |
+| 江苏 | LightGBM-Baseline | 1175.5 | 1162.0 | −13.5 | −1.1% |
+| 江苏 | LightGBM-TwoStage | 1204.7 | 1203.7 | −1.0 | −0.1% |
+| 江苏 | **Conv2D-MultiTask** | **1258.0** | 1222.9 | **−35.1** | **−2.8%** |
+
+### 8c.2 分析要点
+
+1. **PF 上限完全一致**：三市场三组 hourly PF 与 15min PF 净收益分到分钱都相同，验证决策端实现与预测无关；差异**只来自预测输入**。
+2. **内蒙 Conv2D 是最大反常**：hourly 平铺（+72.1 万 / +4.1%）反而**优于** 15min 原生预测。可能原因：15min Conv2D 在节点价场景产生高频毛刺，被 MILP 抓到"伪低点充电"；hourly 阶梯反而把信号平滑了。
+3. **重庆 LGBM 系列 hourly 明显劣化**（−4.8% ~ −7.1%）：15min 原生预测在重庆带来的额外信息被 LGBM 充分利用，hourly 平铺会丢失。
+4. **TwoStage / Baseline 在内蒙 / 江苏粒度差异微小**（≤1.1%）：节点价 / 江南价的分钟级波动对这两个算法增益有限。
+5. **朴素策略**多数在 ±3% 内波动，方向不一致；说明朴素 lag 本质是低频信号，粒度差异不显著。
+
+### 8c.3 选型建议
+
+- **想用 hourly 预测**：内蒙优先 Conv2D（hourly 反而更好）；其他市场粒度敏感性低。
+- **想用 15min 预测**：内蒙优先 TwoStage（峰值在此口径）；重庆 LGBM 系列必须 15min；江苏 Conv2D 必须 15min。
+- **统一口径**：若全公司只能跑一组，**15min 原生预测**整体平均优于 hourly 平铺（重庆 / 江苏 ML 算法均偏向 15min）。
+
+---
+
 ## 7. 更新日志
 
 | 日期 | 内容 |
 |------|------|
+| 2026-05-26 | **ResConv2D（v25 移植）上线 — 内蒙单市场首跑**：`algorithms/resconv2d/` 独立实现 10+ 层 ResBlock 双头深网（aggressive: res64×2 + res128×6 + head 512，~2.52M 参数），损失=L1(price)+0.2·L1(Δprice)，AdamW+warmup+cosine，dropout=0.44，末轮权重。**内蒙 1h（80 epochs）：test_MAE=120.01 / RMSE=173.76 / profile_corr=0.6903；best_val=99.83 @ ep45**。储能 hourly：含补偿净收益 **1743.3 万 / 81 天，兑现率 65.6%**，介于 naive_rolling 与 Baseline 之间，略劣于 Conv2D（1813.7）/ TwoStage（1815.9）。详见 §3.6 / §4.7。重庆/江苏暂未跑（行/列 —）。 |
+| 2026-05-26 | **储能评估补充 hourly 平铺口径**：`scripts/run_storage_eval.py --freq hourly` 把 24 点预测 `np.repeat(·,4)` 平铺成 96 点喂给同一套 MILP，输出落到 `runs/storage/<market>/<algo>_hourly/`，三市场 × 6 算法 + PF 共 21 任务；与 15min 原生口径横向对比见 §8bis / §8c。**关键发现**：①PF 上限两口径完全一致（决策端实现验证 OK）；②内蒙 Conv2D hourly 反超 15min +4.1%（15min 高频毛刺被 MILP 误捕）；③重庆 LGBM 系列 hourly 显著劣化 −4.8%~−7.1%。 |
+| 2026-05-26 | **移除临时对账脚本 + 本工程全量重跑校验**：删除 `scripts/storage_parity_check.py`（曾依赖兄弟工程 neimeng_prj 做 HiGHS 数值对齐校验，验收通过后已无价值）；以本工程 81/86/76 天测试集口径 **全量重跑 15min×21 + hourly×21 共 42 任务**，落回 `runs/storage/`，所有数字与 §8/§8bis/§8c 完全一致（复跑稳定）。 |
+| 2026-05-26 | **储能 MILP 决策评估上线**：`pfbench/storage/` 独立实现 15min 充放电 MILP + 收益 + 周图；三市场×6 算法（含 naive 三策略）+ PF 上限；`scripts/run_storage_eval.py`。详见 §8 |
 | 2026-05-26 | **LightGBM-TwoStage 弃用 Expanding Window CV，改为单次训练-预测**（与 `lightgbm_baseline` / `conv2d_multitask` 口径一致）：删 `expanding_window_cv`，新增 `single_pass_predict`；6 实验重跑。**MAE 变化**：内蒙 1h 102.92→107.96 (+5.04)、内蒙 15min 114.36→120.10 (+5.74)、重庆 1h 113.13→**92.46** (−20.67)、重庆 15min 112.02→**89.89** (−22.13)、江苏 1h 52.39→74.08 (+21.69)、江苏 15min 55.01→81.55 (+26.54)。江苏 TwoStage 现在劣于 7 日均值零线（1h −7.9%, 15min −14.2%）；Profile Corr 三市场均由 Conv2D 拿下第一。详见 §3.2 / §4.5 |
 | 2026-05-26 | **公司模型研发指南第一阶段标准化（§2.4 / §2bis.5 / §3.4 / §3.5 / §4.5）**：①引入朴素基准 `naive_baseline`（lag_1d / lag_7d / rolling_7d_mean）作零线，3 市场×2 粒度×3 策略=18 实验；②扩展评估指标体系（峰谷/极端/分位数 loss，`pfbench/metrics.py`），通过 `scripts/backfill_extended_metrics.py` 回填全部 42 实验；③引入 `experiment_id` + `experiment_config.json` 快照（`pfbench/exp_meta.py`）。**重大发现**：江苏 1h/15min 下 LGBM-Baseline 与 Conv2D 全部劣于 7 日均值零线（−14% ~ −31%），只有 TwoStage 真正越过零线；重庆 TwoStage 也劣于零线 −6%~−12%。 |
 | 2026-05-26 | **Conv2D 早停模式**：`_train_loop` 加 best-val checkpoint + patience early stop，CLI 加 `--early-stop --patience N --output-suffix S`。6 实验在 `_es` 后缀目录跑完，4/6 改善（内蒙 1h −7.8 / 15min −6.2、江苏 1h −2.0 / 15min −5.2），重庆 2 个粒度因 val 集过小导致 best_ep=0 反退 +2.3/+3.6。详见 §3.3.1 / §4.4 |

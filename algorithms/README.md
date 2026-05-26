@@ -83,9 +83,9 @@
 | 算法 | 说明 | 本工程实现 | 源工程 | 源文件 |
 |------|------|-----------|--------|--------|
 | **Conv2D-MultiTask** | Conv2D 多任务网络。输入 (C, H_SLOTS, 7) 张量，3 层 Conv2D + BN + GELU + MaxPool 提取时空模式，回归头（L1）+ 方向分类头（CE，λ=0.3）联合学习。 | `algorithms/conv2d_multitask/` | neimeng_prj | `src/model_v8_multitask.py` |
+| **ResConv2D** | 10+ 层残差 Conv2D 双头深网（v25 加深版）。aggressive 档：res64×2 + res128×6 + head 512 ≈ 2.5M 参数。双头 = 价格 L1 + Δ价 L1（λ=0.2）。CTX=5+0 → H_SLOTS=24。 | `algorithms/resconv2d/`（仅内蒙 1h） | neimeng_prj | `src/model_v25_{resconv,deep_resconv}.py` |
 | **Transformer-Joint24h** | Pure Transformer 全日联合预测。每小时原始特征 (C×4×7) 展平后 Linear 投影，经 Transformer Encoder 建模 24 小时间依赖关系，联合输出全天价格预测。 | 待移植 | neimeng_prj | `src/model_v10_joint.py` |
 | **Transformer-Quantile** | 基于 Transformer-Joint24h 的分位数版本。输出每小时 5 个分位数（P10/P30/P50/P70/P90），使用 Pinball Loss 训练，可用于下游鲁棒优化。 | 待移植 | neimeng_prj | `src/model_v10_quantile.py` |
-| **ResConv2D** | 10 层残差 Conv2D 网络（ResBlock + GELU）。双头架构：价格回归头 + 涨跌方向头。跨市场同构设计（内蒙/重庆共享网络结构）。 | 待移植 | neimeng_prj / chongqing_prj | `src/model_v25_resconv.py` |
 
 **共同特点：**
 - 输入为原始特征矩阵（多通道×时段×回看天数），不做手工特征工程
@@ -132,6 +132,19 @@
 > - 重庆 2 个粒度反退（+2.3/+3.6），best_ep=0 反映 warmup 起点 val 反而最低、patience 触发过早；后续优化方向（sliding-window val / `min_epochs_before_es`）见 `RESULTS.md` §4.4。
 > - 原结果保留在 `runs/predictions/<market>/conv2d_multitask[_15min]/`，早停结果在 `_es` 后缀目录；复现命令 `python algorithms/conv2d_multitask/run.py --market all --freq {1h,15min} --early-stop --patience 10`。
 
+**ResConv2D 三市场结果（2026-05-26，目前仅内蒙单市场完成；aggressive depth + 80 epochs，~2.5M 参数）：**
+
+| 市场 | 粒度 | 参数量 | MAE | RMSE | Profile Corr | best_val/ep | 储能含补偿净(万) | 储能兑现率 |
+|------|------|--------|-----|------|--------------|-------------|------------------|------------|
+| 内蒙 | 1h | 2.52M | **120.01** | 173.76 | 0.6903 | 99.83 / ep45 | 1743.3（hourly） | 65.6% |
+| 重庆 | 1h | — | — | — | — | — | — | — |
+| 江苏 | 1h | — | — | — | — | — | — | — |
+
+> - 移植自 `neimeng_prj/src/model_v25_{resconv,deep_resconv}.py`（v25 最优 aggressive 档）。损失 = L1(price) + 0.2·L1(Δprice)，dropout=0.44，末轮权重，AdamW+warmup+cosine。
+> - 内蒙 1h MAE 120.01 介于 LightGBM-Baseline (134.19) 与 Conv2D-MultiTask (113.12) 之间，略劣于 Conv2D 与 TwoStage（107.96）。储能含补偿净 1743.3 万亦同样位次，与 MAE 排名一致。
+> - 详细分析与训练曲线见 `RESULTS.md` §3.6。复现命令：`python algorithms/resconv2d/run.py --market neimeng --freq 1h --depth aggressive --epochs 80`。
+> - 15min 版本因 H_SLOTS 几何约束（需 ≥20）暂未启用。重庆/江苏待跑。
+
 ## 三、暂不纳入验证
 
 以下算法/实验因不成熟或属于研究性质，暂不进入 benchmark 流程：
@@ -153,6 +166,6 @@
 | LightGBM-Baseline | — | — | realtime_v3 / v4 / v6 | `algorithms/lightgbm_baseline/` |
 | LightGBM-TwoStage | — | — | dayahead_v7_residual | `algorithms/lightgbm_twostage/` |
 | Conv2D-MultiTask | v8.0 系列 | — | — | `algorithms/conv2d_multitask/` |
+| ResConv2D | v25-deep（aggressive） | v25_deep_nm_only_sudun | — | `algorithms/resconv2d/`（内蒙 1h） |
 | Transformer-Joint24h | v10.0-joint | — | — | 待移植 |
 | Transformer-Quantile | v10.0-quantile | — | — | 待移植 |
-| ResConv2D | v25 系列 | v25_deep_nm_only_sudun | — | 待移植 |
