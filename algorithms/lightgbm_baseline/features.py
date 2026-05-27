@@ -1,14 +1,16 @@
-"""LightGBM baseline — 特征工程。
+"""LightGBM baseline — 特征工程（5 lag-bucket 设计）。
 
-支持 1h / 15min 两种粒度，逻辑通过 freq 参数统一：
-  - 1h: steps_per_day=24, D-1 = shift(24), D-2 = shift(48), D-7 = shift(168)
-  - 15min: steps_per_day=96, D-1 = shift(96), D-2 = shift(192), D-7 = shift(672)
+每个 group 按其 ``window_lag_days`` 单独 shift，避免 v1 老路径下"日前出清价被
+shift 1d 当 lag1 特征"导致的数据泄漏：
 
-严格遵循 lag0/lag1/lag2 规则防止未来信息泄漏：
-  - lag0：D 日预测/计划值，不 shift（D-1 已发布）
-  - lag1：D-1 日数据，shift steps_per_day
-  - lag2：D-2 日数据，shift 2 * steps_per_day
-  - 衍生特征均基于已 shift 的序列计算
+  - lag 0d → 不 shift（如 BOUNDARY）
+  - lag 1d → shift steps_per_day（如 BOUNDARY_DM1）
+  - lag 2d → shift 2 * steps_per_day（如 CLEARING_RT / ACTUAL）
+  - lag 3d → shift 3 * steps_per_day（如 CLEARING_DA）
+  - lag 4d → shift 4 * steps_per_day（如 CLEARING_RT_NODAL）
+
+target 自身的多级历史 lag 由 ``cfg.price_lag_hours`` 给出，最小值 = target
+所属 group 的 ``window_lag_days`` × 24h（如内蒙 target lag=4d → 起点 96h）。
 """
 from __future__ import annotations
 
@@ -42,9 +44,7 @@ def build_features(
     feat["y"] = df_h[cfg.target_col]
 
     _add_calendar(feat, freq)
-    _add_lag0(feat, df_h, cfg)
-    _add_lag1(feat, df_h, cfg, steps_per_day)
-    _add_lag2(feat, df_h, cfg, steps_per_day)
+    _add_group_lags(feat, df_h, cfg, steps_per_day)
     _add_price_lags(feat, df_h, cfg, steps_per_day)
     _add_rolling_stats(feat, df_h, cfg, steps_per_day)
     _add_derived(feat, df_h, cfg, steps_per_day)
@@ -52,8 +52,9 @@ def build_features(
     n_before = len(feat)
     feat = feat.dropna(subset=["y"])
     logger.info(
-        "%s [%s]: %d 特征列, %d -> %d 行 (去掉 y=NaN)",
+        "%s [%s]: %d 特征列, %d -> %d 行 (去掉 y=NaN)；target_lag=%dd, price_lag_h=%s",
         cfg.market_id, freq, feat.shape[1] - 1, n_before, len(feat),
+        cfg.target_lag_days, cfg.price_lag_hours,
     )
     return feat
 
@@ -84,35 +85,29 @@ def _add_calendar(feat: pd.DataFrame, freq: str) -> None:
         feat["slot_cos"] = np.cos(2 * np.pi * slot / 96)
 
 
-def _add_lag0(feat: pd.DataFrame, df_h: pd.DataFrame, cfg: MarketConfig) -> None:
-    """lag0：D日已知预测/计划值，不 shift。"""
-    for col in cfg.lag0_cols:
-        if col in df_h.columns:
-            feat[f"lag0_{col}"] = df_h[col]
-
-
-def _add_lag1(
+def _add_group_lags(
     feat: pd.DataFrame, df_h: pd.DataFrame, cfg: MarketConfig, steps_per_day: int,
 ) -> None:
-    """lag1：D-1日数据，shift steps_per_day。"""
-    for col in cfg.lag1_cols:
-        if col in df_h.columns:
-            feat[f"lag1_{col}"] = df_h[col].shift(steps_per_day)
+    """按每个 group 的 window_lag_days 单独 shift 该组所有列。
 
-
-def _add_lag2(
-    feat: pd.DataFrame, df_h: pd.DataFrame, cfg: MarketConfig, steps_per_day: int,
-) -> None:
-    """lag2：D-2日数据，shift 2 * steps_per_day。"""
-    for col in cfg.lag2_cols:
-        if col in df_h.columns:
-            feat[f"lag2_{col}"] = df_h[col].shift(2 * steps_per_day)
+    lag_days=0：不 shift，列名前缀 lag0_；
+    lag_days=k>0：shift k * steps_per_day，列名前缀 lag{k}d_。
+    """
+    for lag_days, cols in cfg.cols_by_lag_days.items():
+        shift_n = lag_days * steps_per_day
+        prefix = "lag0" if lag_days == 0 else f"lag{lag_days}d"
+        for col in cols:
+            if col in df_h.columns:
+                feat[f"{prefix}_{col}"] = df_h[col].shift(shift_n) if shift_n > 0 else df_h[col]
 
 
 def _add_price_lags(
     feat: pd.DataFrame, df_h: pd.DataFrame, cfg: MarketConfig, steps_per_day: int,
 ) -> None:
-    """target 价格多级滞后。price_lag_hours 表达的是"小时数"，按粒度换算为步数。"""
+    """target 价格多级滞后。price_lag_hours 表达的是"小时数"，按粒度换算为步数。
+
+    最小 lag_h = target_lag_days * 24，保证 D 日预测时 target 历史值已可见。
+    """
     target = df_h[cfg.target_col]
     multiplier = steps_per_day // 24
     for lag_h in cfg.price_lag_hours:
@@ -122,8 +117,13 @@ def _add_price_lags(
 def _add_rolling_stats(
     feat: pd.DataFrame, df_h: pd.DataFrame, cfg: MarketConfig, steps_per_day: int,
 ) -> None:
-    """基于已 shift 的 lag1 target 序列计算滚动统计量。"""
-    lagged = df_h[cfg.target_col].shift(steps_per_day)
+    """基于已 shift target_lag_days 天的 target 序列计算滚动统计量。
+
+    target 自身 lag=target_lag_days（如内蒙 v2 = 4d），早期版本固定 shift 1d 会
+    在 v2 数据上引入未来信息泄漏。
+    """
+    lag_base = max(cfg.target_lag_days, 1) * steps_per_day
+    lagged = df_h[cfg.target_col].shift(lag_base)
     day = steps_per_day
     week = 7 * steps_per_day
 
@@ -141,33 +141,41 @@ def _add_rolling_stats(
 def _add_derived(
     feat: pd.DataFrame, df_h: pd.DataFrame, cfg: MarketConfig, steps_per_day: int,
 ) -> None:
-    """衍生特征：差分、比率、峰谷价差。"""
-    target = df_h[cfg.target_col]
-    lag1d = target.shift(steps_per_day)
-    lag2d = target.shift(2 * steps_per_day)
-    lag7d = target.shift(7 * steps_per_day)
+    """衍生特征：差分、比率、峰谷价差。
 
-    feat["target_diff_24h"] = lag1d - lag2d
-    feat["target_ratio_24h_168h"] = lag1d / lag7d.replace(0, np.nan)
+    最小可用 lag = target_lag_days；接下来 +1d；以及 7d（与 weekly 比较）。
+    """
+    target = df_h[cfg.target_col]
+    lag_a_days = max(cfg.target_lag_days, 1)
+    lag_b_days = lag_a_days + 1
+    lag_c_days = max(lag_a_days, 7)
+
+    lag_a = target.shift(lag_a_days * steps_per_day)
+    lag_b = target.shift(lag_b_days * steps_per_day)
+    lag_c = target.shift(lag_c_days * steps_per_day)
+
+    feat[f"target_diff_{lag_a_days}d_{lag_b_days}d"] = lag_a - lag_b
+    feat[f"target_ratio_{lag_a_days}d_{lag_c_days}d"] = lag_a / lag_c.replace(0, np.nan)
 
     peak_hours = set(range(8, 12)) | set(range(17, 21))
     valley_hours = set(range(0, 8)) | {23}
 
-    peak_mask = lag1d.index.hour.isin(peak_hours)
-    valley_mask = lag1d.index.hour.isin(valley_hours)
+    peak_mask = lag_a.index.hour.isin(peak_hours)
+    valley_mask = lag_a.index.hour.isin(valley_hours)
 
-    by_date_lag = lag1d.groupby(lag1d.index.date)
-    feat["target_lag1d_daily_max"] = by_date_lag.transform("max")
-    feat["target_lag1d_daily_min"] = by_date_lag.transform("min")
-    feat["target_lag1d_amplitude"] = (
-        feat["target_lag1d_daily_max"] - feat["target_lag1d_daily_min"]
+    by_date_lag = lag_a.groupby(lag_a.index.date)
+    feat[f"target_lag{lag_a_days}d_daily_max"] = by_date_lag.transform("max")
+    feat[f"target_lag{lag_a_days}d_daily_min"] = by_date_lag.transform("min")
+    feat[f"target_lag{lag_a_days}d_amplitude"] = (
+        feat[f"target_lag{lag_a_days}d_daily_max"]
+        - feat[f"target_lag{lag_a_days}d_daily_min"]
     )
 
-    lag1d_peak = lag1d.where(peak_mask)
-    lag1d_valley = lag1d.where(valley_mask)
-    feat["target_lag1d_peak_mean"] = lag1d_peak.groupby(
-        lag1d_peak.index.date
+    lag_a_peak = lag_a.where(peak_mask)
+    lag_a_valley = lag_a.where(valley_mask)
+    feat[f"target_lag{lag_a_days}d_peak_mean"] = lag_a_peak.groupby(
+        lag_a_peak.index.date
     ).transform("mean")
-    feat["target_lag1d_valley_mean"] = lag1d_valley.groupby(
-        lag1d_valley.index.date
+    feat[f"target_lag{lag_a_days}d_valley_mean"] = lag_a_valley.groupby(
+        lag_a_valley.index.date
     ).transform("mean")
