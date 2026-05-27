@@ -19,6 +19,7 @@ data:
     - rename_neimeng_sqllab_columns       # 中→英列名映射 + 剔除空列/2M/冗余弃风弃光/grid_spot_rt
     - encode_renewable_surplus_level      # 4 类中文标签 → int8 (0/1/2/3)
     - ffill_daily_bid_avg                 # 3 列日级申报电价 → 当日 96 点 ffill
+    - ffill_hourly_clearing_da            # 3 列 hourly 出清 → 每整点复制到 4 个 15min slot
   # 入库全量；算法侧按各自 D 有效起点切训练集（详见 doc/内蒙SQL取数接入设计_V1.0.md §3.3）
   time_range: ["2023-07-22 08:00:00", "2026-05-28 23:45:00"]
 

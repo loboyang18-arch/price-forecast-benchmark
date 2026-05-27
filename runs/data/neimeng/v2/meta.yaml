@@ -46,15 +46,16 @@ columns:
 - spot_market_avg_declared_price_pv
 - renewable_energy_surplus_level
 irregular_steps: 0
-total_numeric_na: 456548
+total_numeric_na: 232412
 preprocess:
 - rename_neimeng_sqllab_columns
 - encode_renewable_surplus_level
 - ffill_daily_bid_avg
+- ffill_hourly_clearing_da
 source:
   path: /root/workspace/price_forecast_benchmark/runs/data/neimeng/sqllab_电价模型取数daily_20260527T034109.csv
   sha256: ad51c07d7d3be5752d312d2af514339df0d18a8fe8b7ae0d05ab1a66c05fc265
   raw_rows: 100000
-built_at: '2026-05-27T07:04:21+00:00'
-git_rev: 2b21aae
+built_at: '2026-05-27T07:11:17+00:00'
+git_rev: f65e123
 build_command: python scripts/build_dataset.py --market neimeng --version v2

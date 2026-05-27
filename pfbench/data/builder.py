@@ -37,6 +37,7 @@ from .jiangsu_fill import drop_qflag_columns, fill_reserve_from_prev_week, shift
 from .neimeng_sqllab_fill import (
     encode_renewable_surplus_level,
     ffill_daily_bid_avg,
+    ffill_hourly_clearing_da,
     rename_neimeng_sqllab_columns,
 )
 from .sudun_fill import fill_hongjing_from_unified, fill_sudun_price_columns, fill_unified_from_sudun
@@ -54,6 +55,7 @@ _PREPROCESS_REGISTRY = {
     "rename_neimeng_sqllab_columns": rename_neimeng_sqllab_columns,
     "encode_renewable_surplus_level": encode_renewable_surplus_level,
     "ffill_daily_bid_avg": ffill_daily_bid_avg,
+    "ffill_hourly_clearing_da": ffill_hourly_clearing_da,
 }
 
 

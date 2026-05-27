@@ -175,3 +175,34 @@ def ffill_daily_bid_avg(df: pd.DataFrame) -> pd.DataFrame:
         ", ".join(f"{c}: {before[c]} -> {after[c]}" for c in cols),
     )
     return out
+
+
+_HOURLY_CLEARING_DA_COLS = (
+    "grid_unified_clearing_price",
+    "hubaodong_unified_clearing_price",
+    "hubaoxi_unified_clearing_price",
+)
+
+
+def ffill_hourly_clearing_da(df: pd.DataFrame) -> pd.DataFrame:
+    """3 列 hourly 出清价 → 每整点 ffill 到该小时内 4 个 15min slot；跨小时不传递。
+
+    新 SQL 取数中这 3 列原本仅整点（slot 0/4/8/...）有值，需要复制到该小时内
+    其余 3 个 slot，与旧 dws 行为及 LightGBM/Conv2D 的 96 点输入约定对齐。
+    """
+    cols = [c for c in _HOURLY_CLEARING_DA_COLS if c in df.columns]
+    if not cols:
+        return df
+
+    out = df.copy()
+    before = {c: int(out[c].notna().sum()) for c in cols}
+    hour_key = pd.DatetimeIndex(out.index).floor("h")
+    for c in cols:
+        out[c] = out.groupby(hour_key)[c].transform(lambda s: s.ffill())
+    after = {c: int(out[c].notna().sum()) for c in cols}
+
+    logger.info(
+        "日前出清 hourly→15min ffill: %s",
+        ", ".join(f"{c}: {before[c]} -> {after[c]}" for c in cols),
+    )
+    return out

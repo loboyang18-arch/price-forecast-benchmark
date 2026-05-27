@@ -22,7 +22,7 @@
       "n_columns": 36,
       "source_path": "/root/workspace/price_forecast_benchmark/runs/data/neimeng/sqllab_电价模型取数daily_20260527T034109.csv",
       "source_sha256": "ad51c07d7d3be5752d312d2af514339df0d18a8fe8b7ae0d05ab1a66c05fc265",
-      "built_at": "2026-05-27T07:04:21+00:00"
+      "built_at": "2026-05-27T07:11:17+00:00"
     },
     "jiangsu": {
       "version": "v1",
@@ -37,5 +37,5 @@
       "built_at": "2026-05-22T07:51:30+00:00"
     }
   },
-  "updated_at": "2026-05-27T07:04:21+00:00"
+  "updated_at": "2026-05-27T07:11:17+00:00"
 }

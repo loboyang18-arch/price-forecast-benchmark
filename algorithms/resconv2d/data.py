@@ -24,7 +24,6 @@ from .config import (
     CONTEXT_AFTER,
     CONTEXT_BEFORE,
     LOOKBACK_DAYS,
-    STREAM_DAY_OFFSET,
 )
 
 logger = logging.getLogger(__name__)
@@ -74,43 +73,36 @@ class ResConv2dDataset(Dataset):
         a_h = set(day_history.keys())
         a_a = set(day_actual.keys())
 
-        off_b = STREAM_DAY_OFFSET["boundary"]
-        off_h = STREAM_DAY_OFFSET["history"]
-        off_a = STREAM_DAY_OFFSET["actual"]
-
         for d in sample_dates:
             if d not in day_targets or d not in day_delta_targets:
                 continue
-            dates_b = [(pd.Timestamp(d) - pd.Timedelta(days=off_b + k)).date()
-                       for k in range(LOOKBACK_DAYS - 1, -1, -1)]
-            dates_h = [(pd.Timestamp(d) - pd.Timedelta(days=off_h + k)).date()
-                       for k in range(LOOKBACK_DAYS - 1, -1, -1)]
-            dates_a = [(pd.Timestamp(d) - pd.Timedelta(days=off_a + k)).date()
-                       for k in range(LOOKBACK_DAYS - 1, -1, -1)]
+            # 5 lag-bucket：三 stream 统一回看 [D-6, D]
+            dates_lb = [(pd.Timestamp(d) - pd.Timedelta(days=k)).date()
+                        for k in range(LOOKBACK_DAYS - 1, -1, -1)]
 
-            if not (all(dd in a_b for dd in dates_b)
-                    and all(dd in a_h for dd in dates_h)
-                    and all(dd in a_a for dd in dates_a)):
+            if not (all(dd in a_b for dd in dates_lb)
+                    and all(dd in a_h for dd in dates_lb)
+                    and all(dd in a_a for dd in dates_lb)):
                 continue
 
             for idx in range(steps_per_day):
                 layers = []
                 for k in range(LOOKBACK_DAYS):
                     if freq == "15min":
-                        s0 = _get_context_slots(day_boundary, dates_b[k], idx)
-                        s1 = _get_context_slots(day_history, dates_h[k], idx)
-                        s2 = _get_context_slots(day_actual, dates_a[k], idx)
+                        s0 = _get_context_slots(day_boundary, dates_lb[k], idx)
+                        s1 = _get_context_slots(day_history, dates_lb[k], idx)
+                        s2 = _get_context_slots(day_actual, dates_lb[k], idx)
                     else:
                         s0 = _get_hour_slots(
-                            day_boundary, dates_b[k], idx,
+                            day_boundary, dates_lb[k], idx,
                             ctx_before=CONTEXT_BEFORE, ctx_after=CONTEXT_AFTER,
                         )
                         s1 = _get_hour_slots(
-                            day_history, dates_h[k], idx,
+                            day_history, dates_lb[k], idx,
                             ctx_before=CONTEXT_BEFORE, ctx_after=CONTEXT_AFTER,
                         )
                         s2 = _get_hour_slots(
-                            day_actual, dates_a[k], idx,
+                            day_actual, dates_lb[k], idx,
                             ctx_before=CONTEXT_BEFORE, ctx_after=CONTEXT_AFTER,
                         )
                     layers.append(np.concatenate([s0, s1, s2], axis=1))
