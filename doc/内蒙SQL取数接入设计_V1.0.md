@@ -1,6 +1,6 @@
 # 内蒙 SQL 取数数据源接入设计 V1.0
 
-> 版本：V1.0（2026-05-27 修订 R2，含 6 项决策点拍板 + 5 lag-bucket 重构）
+> 版本：V1.0（2026-05-27 修订 R3，含 6 项决策点拍板 + 5 lag-bucket 重构 + 特征短板取舍方案 B）
 > 状态：**已审阅，准备落地**
 > 关联工作清单：`doc/后续工作清单_对齐公司指南V1.0.md`
 
@@ -8,9 +8,9 @@
 
 ## 0. 修订说明
 
-本文档是与用户对齐 6 个决策点后的最终版。相对初稿（R0）的实质性修订：
+本文档是与用户对齐 6 个决策点 + 特征短板取舍后的最终版。相对初稿（R0）的实质性修订：
 
-| 决策点 | 初稿 (R0) | 最终 (R2) |
+| 决策点 | 初稿 (R0) | 最终 (R3) |
 |---|---|---|
 | Q1 旧 dws v1 | 保留并标 deprecated | **直接删除**，不保留 |
 | Q2 弃风/弃光列 | 合并为 `is_curtailed` | 进一步：**只留 4 类原始** `renewable_energy_surplus_level`，连 `is_curtailed` 都不要（可由前者派生） |
@@ -20,6 +20,7 @@
 | Q6 commit 策略 | 分 5 个 | **一次性 commit** |
 | Conv2D 特征拼装 | stream 三相位（boundary=0/history=1/actual=2） | **5 lag-bucket**：按可用性 lag 分 0/1d/2d/3d/4d 五桶，每列按其桶取相应 7 天窗口，每列 1 通道（无膨胀） |
 | 列命名 | 业务语义短名（`load_forecast_d1`） | **按 SQL `point_identifier` 转 snake_case**（`dispatched_load_forecast_d1`） |
+| **特征短板取舍** | — | **方案 B**：剔除 `grid_spot_rt_clearing_price`（仅 7 个月覆盖、且半天 0 填充，信号弱）；有效训练区间从 197 天扩到约 398 天 |
 
 ---
 
@@ -110,12 +111,61 @@
 
 | 维度 | 旧 dws v1 | 新 SQL v2 |
 |---|---|---|
-| 时间覆盖 | 460 天 (2025-01-13 ~ 2026-04-17) | 1042 天 (2023-07-22 ~ 2026-05-28) |
-| 列数（特征） | 21 | 37（剔除 7 列冗余/空列后） |
+| 时间覆盖（原始文件） | 460 天 (2025-01-13 ~ 2026-04-17) | 1042 天 (2023-07-22 ~ 2026-05-28) |
+| 列数（特征） | 21 | **36**（按方案 B 剔除 8 列冗余/空列/短板后） |
 | Lag 假设 | 全部当 D-1 末已可见 | 严格按取数时刻可用性，5 档 lag |
 | 苏敦节点价 | 有 3 列 | 无（新数据源不包含） |
 
 **苏敦节点价的处理**：由于 Q1 决策 v1 不保留，苏敦三列直接放弃（`alt_targets` 中删除）。
+
+### 3.3 特征短板分析与方案 B 拍板
+
+**端点级 + 5 lag-bucket 综合分析**显示，新数据存在显著的"列覆盖短板"——部分列在 2025-11-01 / 2025-04-14 等节点之前完全没有数据，强制限制了所有算法的训练起点。
+
+逐列首/末非空日（按短板强度排序）：
+
+| 列 | 首非空 | 末非空 | 非空率 | window_lag | **D 有效起点** |
+|---|---|---|---|---|---|
+| `grid_spot_rt_clearing_price` | 2025-11-01 | 2026-05-27 07:45 | 19.9% | 1d | 2025-11-09 ← 最强短板 |
+| `rt_node_price_ref_nm_hongjing_sta_220kv_1m` | 2025-04-14 | 2026-05-26 | 37.6% | 2d | 2025-04-23 |
+| `provincial_power_balance_margin` | 2024-07-23 | 2026-05-27 | 27.2% | 1d | 2024-07-31 |
+| `spot_market_avg_declared_price_*` ×3 | 2024-06-04 | 2026-05-26 | 0.72%* | 2d | 2024-06-13 |
+| `rt_node_price_nm_hongjing_sta_220kv_1m` (target) | 2023-07-22 | **2026-05-24** | 99.3% | 4d | D 终点 = 2026-05-24 |
+| 其他 BOUNDARY / ACTUAL / 备用 / CLEARING_DA | 2023-07-22 | 2026-05-26~28 | 99%+ | 0/2d/3d | 2023-08 内 |
+
+\* 申报电价是日级 1 点记录，96 点中 1 个非空 → 0.72%；ffill 之后覆盖 100%。
+
+**短板的双重含义**：
+- 端点级（首非空日）决定**训练起点**；某列只有 7 个月数据，整个训练就被压缩到 7 个月
+- ffill 不能改变端点级覆盖
+
+**四个候选方案对比**：
+
+| 方案 | 剔除短板列 | 训练起点 | 训练 + 测试有效跨度 | 训练天数（去除测试 81 天） |
+|---|---|---|---|---|
+| A 保特征全 | — | 2025-11-09 | 197 天 | ~116 天 |
+| **B 剔实时出清** | `grid_spot_rt_clearing_price` | 2025-04-23 | **398 天** | ~317 天 |
+| C 剔实时出清 + 节点价参考 | 上 + `rt_node_price_ref_*` | 2024-07-31 | 664 天 | ~583 天 |
+| D 剔上 3 列 + 平衡裕度 | 上 + `provincial_power_balance_margin` | 2023-07-31 | ~1000 天 | ~919 天 |
+
+**拍板：方案 B**（剔除 `grid_spot_rt_clearing_price`）
+
+理由：
+1. 训练量从 116 天扩到 ~317 天（+173%），ResConv2D / Conv2D 才有发挥空间
+2. 失去的 `grid_spot_rt_clearing_price` 本身就是"D-1 仅 0~7 点真实，其余填 0" 的半残数据，信号本就不强（如果不剔，需要 hook 处理掉 D-1 后段；剔除则连这个 hook 都不需要）
+3. BOUNDARY_DM1 仍保留 3 列实质性 D-1 数据（正备用 / 负备用 / 平衡裕度）
+4. 训练区间 ~398 天与旧 dws v1（460 天）量级接近，新 vs 旧 横比相对可读
+
+**有效训练 / 测试区间（方案 B）**：
+
+```
+D 有效起点 = 2025-04-23   ← 受 rt_node_price_ref_nm_hongjing_sta_220kv_1m 限制
+D 有效终点 = 2026-05-24   ← 受 target 最末非空日限制
+测试集     = 2026-01-27 ~ 2026-04-17（81 天，不变）
+训练集     = [2025-04-23, 2026-01-26] ∪ [2026-04-18, 2026-05-24] ≈ 317 天
+```
+
+> ⚠️ 算法侧实现要点：Conv2D / ResConv2D 的 `Conv2dDataset` 在迭代 D 日时必须检查"窗口内所有需要的列是否有 NaN"，含 NaN 则跳过该日，否则会用 NaN→0 训练污染模型。LightGBM 端 NaN 自然兼容，无需此检查。
 
 ---
 
@@ -144,14 +194,15 @@
 | `HydroOutputPlanD-2` | `hydro_output_plan_d2` | |
 | `RenewableEnergySurplusLevel` | `renewable_energy_surplus_level` | 4 类，LabelEncoder → int8 |
 
-### 4.2 BOUNDARY_DM1 (window_lag=1d, 4 列)
+### 4.2 BOUNDARY_DM1 (window_lag=1d, 3 列)
 
 | point_identifier | 列名 | 备注 |
 |---|---|---|
 | `UpwardReserveCapacity` | `upward_reserve_capacity` | |
 | `DownwardReserveCapacity` | `downward_reserve_capacity` | |
 | `ProvincialPowerBalanceMargin` | `provincial_power_balance_margin` | |
-| `GridSpotRtClearingPrice` | `grid_spot_rt_clearing_price` | **特殊**：D-1 仅 0~7 点真实，其余填 0 |
+
+> 方案 B：`GridSpotRtClearingPrice` 因短板（仅 7 个月覆盖 + 半天 0 填充）剔除，详见 §3.3。
 
 ### 4.3 ACTUAL (window_lag=2d, 7 列)
 
@@ -190,7 +241,7 @@
 | `RTNodeEnergyPrice_NmHongJingSta220kV1M` | `rt_node_energy_price_nm_hongjing_sta_220kv_1m` | |
 | `RTNodeCongestionPrice_NmHongJingSta220kV1M` | `rt_node_congestion_price_nm_hongjing_sta_220kv_1m` | |
 
-### 4.7 剔除清单（7 列）
+### 4.7 剔除清单（8 列）
 
 | point_identifier / SQL 派生 | 原因 |
 |---|---|
@@ -201,18 +252,19 @@
 | `RTNodePriceRef_NmHongJingSta220kV2M` | Q3 |
 | `是否弃风`（SQL 派生） | Q2：信息冗余于 `renewable_energy_surplus_level` |
 | `是否弃光`（SQL 派生） | Q2：同上 |
+| `GridSpotRtClearingPrice` | **方案 B**：仅 7 个月覆盖 + 半天 0 填充，信号弱 |
 
 ### 4.8 汇总
 
 ```
 BOUNDARY          16 列  window_lag=0    →  Conv2D boundary stream
-BOUNDARY_DM1       4 列  window_lag=1d   →  Conv2D history stream
+BOUNDARY_DM1       3 列  window_lag=1d   →  Conv2D history stream
 CLEARING_DA        3 列  window_lag=3d   →  Conv2D history stream
 CLEARING_RT        4 列  window_lag=2d   →  Conv2D history stream
 CLEARING_RT_NODAL  3 列  window_lag=4d   →  Conv2D history stream
 ACTUAL             7 列  window_lag=2d   →  Conv2D actual stream
 ─────────────────────
-合计              37 列（含 target）
+合计              36 列（含 target）
 
 target: rt_node_price_nm_hongjing_sta_220kv_1m
 ```
@@ -312,10 +364,10 @@ data:
   source_ts_col: 时间标签
   freq: 15min
   preprocess:
-    - rename_neimeng_columns               # 中→英列名映射 + 剔除空列 + 剔除 2M + 剔除冗余弃风弃光
+    - rename_neimeng_columns               # 中→英列名映射 + 剔除空列/2M/冗余弃风弃光/grid_spot_rt
     - encode_renewable_surplus_level       # 4 类中文标签 → int8 (0/1/2/3)
-    - fill_spot_rt_after_cutoff            # D-1 07:00 之后填 0
     - ffill_daily_bid_avg                  # 3 列日级申报电价 → 当日 96 点 ffill
+  # 入库全量；算法侧按各自 D 有效起点切训练集（见 §3.3）
   time_range: ["2023-07-22 08:00:00", "2026-05-28 23:45:00"]
 
 storage:
@@ -387,7 +439,6 @@ features:
         - upward_reserve_capacity
         - downward_reserve_capacity
         - provincial_power_balance_margin
-        - grid_spot_rt_clearing_price
 
     BOUNDARY_CLEARED:
       enabled: false
@@ -437,9 +488,11 @@ features:
 
 ---
 
-## 7. Builder 改造：4 个新预处理钩子
+## 7. Builder 改造：3 个新预处理钩子
 
 放入 `pfbench/data/neimeng_sqllab_fill.py`（新文件），在 `pfbench/data/builder.py` 的 `_PREPROCESS_REGISTRY` 中注册。
+
+> 注：方案 B 拍板后，原 §7.3 `fill_spot_rt_after_cutoff` 钩子不再需要（`grid_spot_rt_clearing_price` 列已在 `rename_neimeng_columns` 中直接 drop）。
 
 ### 7.1 `rename_neimeng_columns`
 
@@ -470,7 +523,7 @@ COLUMN_MAP = {
     "水电出力计划实测": "hydro_output_plan_actual",
     "水电出力计划D-1": "hydro_output_plan_d1",
     "水电出力计划D-2": "hydro_output_plan_d2",
-    "全网现货实时出清电价": "grid_spot_rt_clearing_price",
+    "全网现货实时出清电价": None,  # 方案 B 剔除（覆盖只 7 个月，半天 0 填充）
     "全网统一出清电价": "grid_unified_clearing_price",
     "呼包东统一出清电价": "hubaodong_unified_clearing_price",
     "呼包西统一出清电价": "hubaoxi_unified_clearing_price",
@@ -523,27 +576,7 @@ def encode_renewable_surplus_level(df: pd.DataFrame) -> pd.DataFrame:
     return df
 ```
 
-### 7.3 `fill_spot_rt_after_cutoff`
-
-```python
-def fill_spot_rt_after_cutoff(df: pd.DataFrame) -> pd.DataFrame:
-    """grid_spot_rt_clearing_price 每天仅保留 slot 0~28（00:00~07:00），其余填 0。
-
-    取数瞬间（D-1 09:30）业务上只能拿到 D-1 当天 0~7 点的实时出清；与生产推断对齐，
-    训练时也按相同规则裁剪，避免训练-推断分布漂移。
-    """
-    col = "grid_spot_rt_clearing_price"
-    if col not in df.columns:
-        return df
-    out = df.copy()
-    daily_slot = (out.index.hour * 4 + out.index.minute // 15).to_numpy()
-    mask_keep = daily_slot <= 28
-    out.loc[~mask_keep, col] = 0.0
-    out[col] = out[col].fillna(0.0)
-    return out
-```
-
-### 7.4 `ffill_daily_bid_avg`
+### 7.3 `ffill_daily_bid_avg`
 
 ```python
 def ffill_daily_bid_avg(df: pd.DataFrame) -> pd.DataFrame:
@@ -560,7 +593,7 @@ def ffill_daily_bid_avg(df: pd.DataFrame) -> pd.DataFrame:
     return out
 ```
 
-### 7.5 Builder 注册
+### 7.4 Builder 注册
 
 `pfbench/data/builder.py` 的 `_PREPROCESS_REGISTRY`：
 
@@ -568,7 +601,6 @@ def ffill_daily_bid_avg(df: pd.DataFrame) -> pd.DataFrame:
 from .neimeng_sqllab_fill import (
     encode_renewable_surplus_level,
     ffill_daily_bid_avg,
-    fill_spot_rt_after_cutoff,
     rename_neimeng_columns,
 )
 
@@ -576,7 +608,6 @@ _PREPROCESS_REGISTRY = {
     # ... 原有保留 ...
     "rename_neimeng_columns": rename_neimeng_columns,
     "encode_renewable_surplus_level": encode_renewable_surplus_level,
-    "fill_spot_rt_after_cutoff": fill_spot_rt_after_cutoff,
     "ffill_daily_bid_avg": ffill_daily_bid_avg,
 }
 ```
@@ -688,7 +719,7 @@ if da is not None and da.window_lag_days > 0:
 | 旧 v1 实验产物 (`runs/predictions/neimeng/<algo>/`) 与新数据列名冲突 | 新实验落 `_v2` 后缀目录或直接覆盖；RESULTS.md 区分版本 |
 | v2 数据下旧 v1 baseline MAE 严重劣化（因 v1 隐含未来信息泄漏） | 用 RESULTS.md "更新日志" 注明：v1 数字仅作历史参考，不可与 v2 横比 |
 | `renewable_energy_surplus_level` 实际类别可能多于 4 类 | LabelEncoder 默认 fillna(0) 即映射未知值为"无弃用"；后续监测 distinct 值 |
-| `grid_spot_rt_clearing_price` D-1 07:00 后填 0 引入"伪零段" | 模型可能学到"slot>28 即 0"的捷径；监测特征重要性时关注 |
+| 方案 B 后训练量仅 ~317 天，深度模型收敛风险 | ResConv2D 烟测先跑 15 epochs，确认 MAE 量级；若不达预期可考虑切换到方案 C |
 | 节点价 2M 一并删除可能造成将来 1M 异常时无备份信号 | 在 raw csv 中本身保留；如需可以反向恢复 |
 
 ---
@@ -702,12 +733,13 @@ if da is not None and da.window_lag_days > 0:
 3. `lag_resolver` 加 `lag_label_to_days`
 4. 改 `config/markets/neimeng.yaml`
 5. 运行 `python scripts/build_dataset.py --market neimeng --version v2 --force`
-6. 验收：产出 `runs/data/neimeng/v2/data.parquet`（~100k 行 × 37 列 + ts）；抽样核对 5 列：
+6. 验收：产出 `runs/data/neimeng/v2/data.parquet`（~100k 行 × 36 列 + ts）；抽样核对 5 列：
    - `dispatched_load_forecast_d1` 5-28 行有值
    - `upward_reserve_capacity` 5-28 行 NaN、5-27 行有值
-   - `grid_spot_rt_clearing_price` 5-27 行 slot 29~95 全 0
    - `grid_unified_clearing_price` 最末非空日 = 5-25
    - `rt_node_price_nm_hongjing_sta_220kv_1m` 最末非空日 = 5-24
+   - `rt_node_price_ref_nm_hongjing_sta_220kv_1m` 首非空日 = 2025-04-14
+   - 不存在 `grid_spot_rt_clearing_price` 列（已剔除）
 
 ### 阶段 2：feature_registry 单元验证（0.3 人天）
 
@@ -828,3 +860,4 @@ ORDER BY `时间标签` DESC;
 | 额外 | Conv2D 特征拼装 | 5 lag-bucket（按可用性 lag 分 0/1d/2d/3d/4d 五桶取窗口） |
 | 额外 | 列命名规则 | 按 SQL `point_identifier` 转 snake_case |
 | 额外 | target 列 | `rt_node_price_nm_hongjing_sta_220kv_1m` |
+| 额外 | 特征短板取舍 | **方案 B**：剔除 `grid_spot_rt_clearing_price`，训练有效区间 ~398 天 |
