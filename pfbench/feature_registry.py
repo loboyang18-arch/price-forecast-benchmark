@@ -20,15 +20,17 @@ from typing import Dict, List, Optional
 
 import yaml
 
-from .lag_resolver import lag_labels_to_periods
+from .lag_resolver import lag_label_to_days, lag_labels_to_periods
 from .paths import MARKETS_DIR
 
 FEATURE_GROUPS = (
     "BOUNDARY",
     "BOUNDARY_CLEARED",
+    "BOUNDARY_DM1",        # D-1 当天数据（可用性 lag=1d），如备用、平衡裕度
     "WEATHER",
     "CLEARING_DA",
     "CLEARING_RT",
+    "CLEARING_RT_NODAL",   # 节点价实测（可用性 lag=4d，与一般 RT 区分）
     "ACTUAL",
     "CALENDAR",
     "DERIVED",
@@ -41,7 +43,8 @@ class FeatureGroup:
     name: str
     enabled: bool
     cols: List[str]
-    lag_labels: List[str]            # 语义化 lag，如 ["1d", "2d", "7d"]；空列表表示不 shift
+    lag_labels: List[str]            # （兼容字段）算法侧用于派生 shift 副本时使用
+    window_lag: str = "0"            # 数据可用性 lag 标签：'0' / '1d' / '2d' / '3d' / '4d'
 
 
 @dataclass
@@ -86,7 +89,8 @@ class ResolvedGroup:
     """解析后的单类别信息。"""
     name: str
     cols: List[str]
-    lag_periods: List[int]           # 已按 freq 解析为整数步数
+    lag_periods: List[int]           # 已按 freq 解析为整数步数（兼容字段）
+    window_lag_days: int = 0         # 可用性 lag 转整数天（用于深度模型 5 lag-bucket 取 7 天窗口）
 
 
 @dataclass
@@ -111,7 +115,11 @@ class ResolvedSpec:
             "freq": self.freq,
             "target": self.target,
             "groups": {
-                name: {"cols": g.cols, "lag_periods": g.lag_periods}
+                name: {
+                    "cols": g.cols,
+                    "lag_periods": g.lag_periods,
+                    "window_lag_days": g.window_lag_days,
+                }
                 for name, g in self.groups.items()
             },
         }
@@ -158,8 +166,12 @@ def load_feature_registry(market_id: str) -> FeatureRegistry:
         enabled = bool(spec.get("enabled", False))
         cols = list(spec.get("cols") or [])
         lag_labels = list(spec.get("lag_labels") or default_lags.get(g_name) or [])
+        window_lag = str(spec.get("window_lag", "0"))
+        # 提前校验，让 yaml 错误尽早暴露
+        lag_label_to_days(window_lag)
         groups[g_name] = FeatureGroup(
-            name=g_name, enabled=enabled, cols=cols, lag_labels=lag_labels,
+            name=g_name, enabled=enabled, cols=cols,
+            lag_labels=lag_labels, window_lag=window_lag,
         )
 
     reg = FeatureRegistry(
@@ -219,7 +231,11 @@ def resolve_columns(market_id: str, spec: FeatureSpec, freq: str) -> ResolvedSpe
         else:
             lag_labels = g.lag_labels
         periods = lag_labels_to_periods(lag_labels, freq)
-        resolved[name] = ResolvedGroup(name=name, cols=list(g.cols), lag_periods=periods)
+        window_lag_days = lag_label_to_days(g.window_lag)
+        resolved[name] = ResolvedGroup(
+            name=name, cols=list(g.cols),
+            lag_periods=periods, window_lag_days=window_lag_days,
+        )
 
     return ResolvedSpec(
         market_id=market_id, freq=freq, target=target, groups=resolved,

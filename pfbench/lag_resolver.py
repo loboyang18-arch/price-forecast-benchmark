@@ -115,3 +115,52 @@ def lag_labels_to_periods(labels: Iterable, freq: str) -> List[int]:
     if not labels:
         return [0]
     return [lag_to_periods(x, freq) for x in labels]
+
+
+def lag_label_to_days(label) -> int:
+    """把 ``window_lag`` 标签解析为整数天数。
+
+    用于 feature_registry 的 ``window_lag`` 字段（即数据可用性 lag，
+    单位天）。仅支持以"日"为粒度的语义：``"0"`` / ``"1d"`` / ``"2d"`` / ...
+
+    Args:
+        label: lag 标签，``"0"`` / ``"Nd"`` 或整数 0。
+
+    Returns:
+        非负整数天数。
+
+    Raises:
+        ValueError: 输入既不是 ``"0"`` 也不是 ``"Nd"`` 格式。
+
+    Examples:
+        >>> lag_label_to_days("0")
+        0
+        >>> lag_label_to_days("1d")
+        1
+        >>> lag_label_to_days("4d")
+        4
+        >>> lag_label_to_days(0)
+        0
+    """
+    if isinstance(label, (int, float)):
+        if int(label) == 0:
+            return 0
+        raise ValueError(
+            f"window_lag 仅允许整数 0；其他粒度请用 '1d' / '2d' / ... 字符串。got: {label!r}"
+        )
+    if not isinstance(label, str):
+        raise TypeError(
+            f"window_lag 必须是 str 或 0；got: {type(label).__name__}: {label!r}"
+        )
+    s = label.strip()
+    if s in ("0", "0d", ""):
+        return 0
+    m = re.match(r"^(\d+)d$", s)
+    if not m:
+        raise ValueError(
+            f"window_lag 仅支持 '0' / 'Nd' 格式（粒度=天）；got {label!r}"
+        )
+    n = int(m.group(1))
+    if n < 0:
+        raise ValueError(f"window_lag 天数必须为非负整数；got {label!r}")
+    return n

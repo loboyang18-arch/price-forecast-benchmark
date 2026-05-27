@@ -1,0 +1,60 @@
+market_id: neimeng
+market_name: 内蒙古
+region: neimeng
+version: v2
+freq: 15min
+time_range:
+- '2023-07-22 08:00:00'
+- '2026-05-28 23:45:00'
+n_rows: 100000
+n_columns: 36
+columns:
+- bidding_space_forecast_d1
+- dispatched_load_actual
+- dispatched_load_forecast_d1
+- dispatched_load_forecast_d2
+- eastward_delivery_plan_actual
+- eastward_delivery_plan_forecast_d1
+- eastward_delivery_plan_forecast_d2
+- non_market_output_plan_actual
+- non_market_output_plan_d1
+- non_market_output_plan_d2
+- grid_renewable_actual
+- grid_renewable_forecast_d1
+- grid_renewable_forecast_d2
+- grid_pv_actual
+- grid_pv_forecast_d1
+- grid_pv_forecast_d2
+- grid_wind_power_actual
+- grid_wind_power_forecast_d1
+- grid_wind_power_forecast_d2
+- hydro_output_plan_actual
+- hydro_output_plan_d1
+- hydro_output_plan_d2
+- grid_unified_clearing_price
+- hubaodong_unified_clearing_price
+- hubaoxi_unified_clearing_price
+- rt_node_price_nm_hongjing_sta_220kv_1m
+- rt_node_energy_price_nm_hongjing_sta_220kv_1m
+- rt_node_congestion_price_nm_hongjing_sta_220kv_1m
+- rt_node_price_ref_nm_hongjing_sta_220kv_1m
+- upward_reserve_capacity
+- downward_reserve_capacity
+- provincial_power_balance_margin
+- spot_market_avg_declared_price_coal
+- spot_market_avg_declared_price_wind_power
+- spot_market_avg_declared_price_pv
+- renewable_energy_surplus_level
+irregular_steps: 0
+total_numeric_na: 456548
+preprocess:
+- rename_neimeng_sqllab_columns
+- encode_renewable_surplus_level
+- ffill_daily_bid_avg
+source:
+  path: /root/workspace/price_forecast_benchmark/runs/data/neimeng/sqllab_电价模型取数daily_20260527T034109.csv
+  sha256: ad51c07d7d3be5752d312d2af514339df0d18a8fe8b7ae0d05ab1a66c05fc265
+  raw_rows: 100000
+built_at: '2026-05-27T07:04:21+00:00'
+git_rev: 2b21aae
+build_command: python scripts/build_dataset.py --market neimeng --version v2

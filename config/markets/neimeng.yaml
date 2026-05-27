@@ -11,19 +11,20 @@ prediction_globs:
   - "${WORKSPACE_ROOT}/neimeng_prj/output/experiments/**/test_predictions_hourly.csv"
 
 data:
-  version: v1
-  source: "${WORKSPACE_ROOT}/neimeng_prj/output/dws_15min_features_ext_data4_hongjing.csv"
-  source_ts_col: ts
+  version: v2
+  source: "${PROJECT_ROOT}/runs/data/neimeng/sqllab_电价模型取数daily_20260527T034109.csv"
+  source_ts_col: 时间标签
   freq: 15min
   preprocess:
-    - fill_sudun_prices
-    - fill_hongjing_from_unified
-    - fill_unified_from_sudun
-  time_range: ["2025-01-13 00:00:00", "2026-04-17 23:45:00"]
+    - rename_neimeng_sqllab_columns       # 中→英列名映射 + 剔除空列/2M/冗余弃风弃光/grid_spot_rt
+    - encode_renewable_surplus_level      # 4 类中文标签 → int8 (0/1/2/3)
+    - ffill_daily_bid_avg                 # 3 列日级申报电价 → 当日 96 点 ffill
+  # 入库全量；算法侧按各自 D 有效起点切训练集（详见 doc/内蒙SQL取数接入设计_V1.0.md §3.3）
+  time_range: ["2023-07-22 08:00:00", "2026-05-28 23:45:00"]
 
 storage:
   station_name: hongjing_220kv1m
-  settlement_price_col: price_hongjing_220kv1m_nodal
+  settlement_price_col: rt_node_price_nm_hongjing_sta_220kv_1m
   battery:
     p_max_mw: 200
     cap_mwh: 400
@@ -37,74 +38,105 @@ storage:
     carry_soc: false
 
 notes: |
-  统一数据源含 22 列特征 + 苏敦/红井/统一出清价。
-  fill_sudun_prices 补齐苏敦三列（09-29 整日缺失用 price_unified 代理）。
-  fill_hongjing_from_unified 补齐红井三列（09-29 整日缺失用 price_unified 代理）。
-  fill_unified_from_sudun 补齐统一出清价（04-09 整日缺失用苏敦节点价代理）。
-  features.target_default 是默认 target；算法可从 alt_targets 中选其它列。
+  v2 数据源：内蒙古现货 SQL 取数库 daily 表（kronos_prod.dwd_logic_point_detail）。
+  取数时刻 = D-1 09:30，所有 window_lag 严格按"文件中该列最末非空日距 D 日天数"设定。
+  方案 B：剔除 grid_spot_rt_clearing_price（仅 7 个月覆盖 + 半天 0 填充），
+  有效训练区间约 398 天（D 起点 2025-04-23，受 CLEARING_RT 限制）。
+  详见 doc/内蒙SQL取数接入设计_V1.0.md。
 
 # 跨算法共享的特征本体（由 pfbench.feature_registry 读取并解析）。
-# 详见 pfbench/feature_registry.py 中 FEATURE_GROUPS 的定义。
+# 每个 group 含 window_lag（数据可用性 lag，深度模型 5 lag-bucket 取窗口用）+
+# lag_labels（兼容字段；新设计下 LightGBM 端用 [window_lag] 作单 shift）。
 features:
-  target_default: price_hongjing_220kv1m_nodal      # 红井 220kV 节点电价（含能量+阻塞）
+  target_default: rt_node_price_nm_hongjing_sta_220kv_1m
   alt_targets:
-    - price_hongjing_220kv1m_nodal      # 红井节点价（默认）
-    - price_hongjing_220kv1m_energy     # 红井能量价
-    - price_hongjing_220kv1m_cong       # 红井阻塞价
-    - price_sudun_500kv1m_nodal         # 苏敦节点价
-    - price_sudun_500kv1m_energy
-    - price_sudun_500kv1m_cong
-    - price_unified                     # 全网统一出清价
-    - price_hbd                         # 呼包东统一价
-    - price_hbx                         # 呼包西统一价
+    - rt_node_price_nm_hongjing_sta_220kv_1m          # 红井 1M 节点价（默认 target）
+    - rt_node_energy_price_nm_hongjing_sta_220kv_1m
+    - rt_node_congestion_price_nm_hongjing_sta_220kv_1m
+    - grid_unified_clearing_price                     # 全网统调价（备选）
+    - hubaodong_unified_clearing_price
+    - hubaoxi_unified_clearing_price
 
-  # 各类别默认 lag 标签；算法侧可通过 FeatureSpec.lag_overrides 覆盖。
-  # 语义化 lag，运行时由 pfbench.lag_resolver 按 freq (1h/15min) 转为 periods。
+  # 默认 lag_labels：与 window_lag 单值一致；空列表 [] 表示不 shift
   default_lag_labels:
-    BOUNDARY: []                  # 不 shift（D 日已知）
-    BOUNDARY_CLEARED: []
-    WEATHER: []
-    CLEARING_DA: ["1d", "2d", "7d"]
-    CLEARING_RT: ["1d", "2d", "7d"]
-    ACTUAL: ["2d", "7d"]
+    BOUNDARY:            []
+    BOUNDARY_DM1:        ["1d"]
+    CLEARING_DA:         ["3d"]
+    CLEARING_RT:         ["2d"]
+    CLEARING_RT_NODAL:   ["4d"]
+    ACTUAL:              ["2d"]
 
   groups:
-    BOUNDARY:                     # D-1 末已知的事前预测/计划/边界
+    BOUNDARY:                              # 16 列，D-1 09:30 前 D 日已发布
       enabled: true
+      window_lag: "0"
       cols:
-        - load_forecast
-        - renewable_forecast
-        - wind_forecast
-        - solar_forecast
-        - east_send_forecast
-        - reserve_pos_capacity
-        - reserve_neg_capacity
-        - price_dayahead_preclear_energy
-    BOUNDARY_CLEARED:             # 出清修正版（内蒙数据无此类）
+        - bidding_space_forecast_d1
+        - dispatched_load_forecast_d1
+        - dispatched_load_forecast_d2
+        - eastward_delivery_plan_forecast_d1
+        - eastward_delivery_plan_forecast_d2
+        - non_market_output_plan_d1
+        - non_market_output_plan_d2
+        - grid_renewable_forecast_d1
+        - grid_renewable_forecast_d2
+        - grid_pv_forecast_d1
+        - grid_pv_forecast_d2
+        - grid_wind_power_forecast_d1
+        - grid_wind_power_forecast_d2
+        - hydro_output_plan_d1
+        - hydro_output_plan_d2
+        - renewable_energy_surplus_level
+
+    BOUNDARY_DM1:                          # 3 列，D-1 当天数据
+      enabled: true
+      window_lag: "1d"
+      cols:
+        - upward_reserve_capacity
+        - downward_reserve_capacity
+        - provincial_power_balance_margin
+
+    BOUNDARY_CLEARED:
       enabled: false
       cols: []
-    WEATHER:                      # 三市场统一不使用天气
+
+    WEATHER:
       enabled: false
       cols: []
-    CLEARING_DA:                  # 历史日前出清价（含节点价）
+
+    CLEARING_DA:                           # 3 列，日前出清入库延迟 3d
       enabled: true
+      window_lag: "3d"
       cols:
-        - price_unified
-        - price_hbd
-        - price_hbx
-        - price_sudun_500kv1m_nodal
-        - price_sudun_500kv1m_energy
-        - price_sudun_500kv1m_cong
-        - price_hongjing_220kv1m_nodal
-        - price_hongjing_220kv1m_energy
-        - price_hongjing_220kv1m_cong
-    CLEARING_RT:                  # 内蒙无独立实时价
-      enabled: false
-      cols: []
-    ACTUAL:                       # 历史实际运行值
+        - grid_unified_clearing_price
+        - hubaodong_unified_clearing_price
+        - hubaoxi_unified_clearing_price
+
+    CLEARING_RT:                           # 4 列，实时类参考价 / 申报电价（lag=2d）
       enabled: true
+      window_lag: "2d"
       cols:
-        - load_actual
-        - renewable_actual
-        - wind_actual
-        - solar_actual
+        - rt_node_price_ref_nm_hongjing_sta_220kv_1m
+        - spot_market_avg_declared_price_coal
+        - spot_market_avg_declared_price_wind_power
+        - spot_market_avg_declared_price_pv
+
+    CLEARING_RT_NODAL:                     # 3 列，节点价实测（lag=4d；含 target）
+      enabled: true
+      window_lag: "4d"
+      cols:
+        - rt_node_price_nm_hongjing_sta_220kv_1m
+        - rt_node_energy_price_nm_hongjing_sta_220kv_1m
+        - rt_node_congestion_price_nm_hongjing_sta_220kv_1m
+
+    ACTUAL:                                # 7 列，边界类各 actual（lag=2d）
+      enabled: true
+      window_lag: "2d"
+      cols:
+        - dispatched_load_actual
+        - eastward_delivery_plan_actual
+        - non_market_output_plan_actual
+        - grid_renewable_actual
+        - grid_pv_actual
+        - grid_wind_power_actual
+        - hydro_output_plan_actual

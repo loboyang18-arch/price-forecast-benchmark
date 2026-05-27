@@ -13,16 +13,16 @@
       "built_at": "2026-05-22T06:27:37+00:00"
     },
     "neimeng": {
-      "version": "v1",
+      "version": "v2",
       "time_range": [
-        "2025-01-13 00:00:00",
-        "2026-04-17 23:45:00"
+        "2023-07-22 08:00:00",
+        "2026-05-28 23:45:00"
       ],
-      "n_rows": 44160,
-      "n_columns": 21,
-      "source_path": "/root/workspace/neimeng_prj/output/dws_15min_features_ext_data4_hongjing.csv",
-      "source_sha256": "55e0174ad7a6e962e78cc7582671885dc366b554466d1063757cf32fcef1193d",
-      "built_at": "2026-05-22T06:27:48+00:00"
+      "n_rows": 100000,
+      "n_columns": 36,
+      "source_path": "/root/workspace/price_forecast_benchmark/runs/data/neimeng/sqllab_电价模型取数daily_20260527T034109.csv",
+      "source_sha256": "ad51c07d7d3be5752d312d2af514339df0d18a8fe8b7ae0d05ab1a66c05fc265",
+      "built_at": "2026-05-27T07:04:21+00:00"
     },
     "jiangsu": {
       "version": "v1",
@@ -37,5 +37,5 @@
       "built_at": "2026-05-22T07:51:30+00:00"
     }
   },
-  "updated_at": "2026-05-22T07:51:30+00:00"
+  "updated_at": "2026-05-27T07:04:21+00:00"
 }

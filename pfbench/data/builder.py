@@ -34,6 +34,11 @@ import yaml
 from ..markets import DEFAULT_WORKSPACE
 from ..paths import DATA_DIR, MARKETS_DIR, ROOT
 from .jiangsu_fill import drop_qflag_columns, fill_reserve_from_prev_week, shift_ts_to_period_start
+from .neimeng_sqllab_fill import (
+    encode_renewable_surplus_level,
+    ffill_daily_bid_avg,
+    rename_neimeng_sqllab_columns,
+)
 from .sudun_fill import fill_hongjing_from_unified, fill_sudun_price_columns, fill_unified_from_sudun
 
 logger = logging.getLogger(__name__)
@@ -45,6 +50,10 @@ _PREPROCESS_REGISTRY = {
     "shift_ts_to_period_start": shift_ts_to_period_start,
     "drop_qflag_columns": drop_qflag_columns,
     "fill_reserve_from_prev_week": fill_reserve_from_prev_week,
+    # 内蒙 SQL 取数（v2 数据源）
+    "rename_neimeng_sqllab_columns": rename_neimeng_sqllab_columns,
+    "encode_renewable_surplus_level": encode_renewable_surplus_level,
+    "ffill_daily_bid_avg": ffill_daily_bid_avg,
 }
 
 
@@ -120,6 +129,10 @@ def _read_source(cfg: dict, workspace: Path) -> tuple[pd.DataFrame, Path]:
     df = df.dropna(subset=["ts"]).sort_values("ts")
     df = df.drop_duplicates(subset=["ts"], keep="last")
     df = df.set_index("ts").sort_index()
+    if df.index.tz is not None:
+        # 统一到无 tz 的北京时间，使后续 clip / _align_to_grid 兼容
+        df.index = df.index.tz_convert("Asia/Shanghai").tz_localize(None)
+        logger.info("ts 列原带 tz，已转为 tz-naive Asia/Shanghai")
     return df, src_path
 
 
