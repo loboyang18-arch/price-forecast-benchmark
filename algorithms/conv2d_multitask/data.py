@@ -84,6 +84,29 @@ def _shift_by_window_lag(df: pd.DataFrame, spec: ResolvedSpec) -> pd.DataFrame:
     return shifted
 
 
+def _stream_cutoff_date(df_shifted: pd.DataFrame, cols: List[str]):
+    """该 stream 所有列 ``first_valid_index`` 的 max → shift 后可见起点日。
+
+    任一列全 NaN 时被剔除（避免阻塞整流；会在日志中显示）。返回 ``None`` 表示
+    无列可用，调用方按"无 cutoff 限制"处理。
+    """
+    firsts: List[pd.Timestamp] = []
+    empties: List[str] = []
+    for c in cols:
+        if c not in df_shifted.columns:
+            continue
+        fi = df_shifted[c].first_valid_index()
+        if fi is None:
+            empties.append(c)
+            continue
+        firsts.append(fi)
+    if empties:
+        logger.warning("以下列 shift 后全 NaN，已在 cutoff 计算中剔除：%s", empties)
+    if not firsts:
+        return None
+    return max(firsts).normalize().date()
+
+
 def build_daily_arrays(
     df_15min: pd.DataFrame, spec: ResolvedSpec, freq: str = "1h",
 ) -> Tuple[List, Dict, Dict, Dict, Dict, int, int, Dict[str, List[str]]]:
@@ -92,15 +115,20 @@ def build_daily_arrays(
     流程：
       1. 按每列 ``window_lag_days`` 对 df 做 shift（target 列也会被 shift，仅作为
          特征输入；target 真值另从原始 df 取）
-      2. 每个 stream 收集其 group 下的列名，切日时取该 stream 对应的子集
-      3. 若某天某 stream 的切片含 NaN，**不**入对应 day_dict（Dataset 端自然跳过）
+      2. 每个 stream 计算"shift 后可见起点日"——取 stream 内所有列 first_valid_index
+         的 max，作为该 stream 的硬截断 cutoff
+      3. 切日时，``d < stream_cutoff`` 的日**不**入对应 stream 的 day_dict；
+         ``d >= cutoff`` 的日全部入 dict，**列内部零星 NaN 由 Dataset 端 nan_to_num 容忍**
       4. target 列从未 shift 的原始 df 切日取真值
+
+    这样训练窗口由"短板列首非空"硬截断（与方案 B 设计一致），同时容忍长尾
+    覆盖期内的小空洞（如 ``provincial_power_balance_margin`` 等的 58% 日内空洞）。
 
     Returns:
         valid_dates: 有完整 target 的日期列表
-        day_boundary: {date: (96, C_BOUNDARY + N_TIME_ENC) ndarray}  仅含完整无 NaN 日
-        day_history:  {date: (96, C_HISTORY) ndarray}                仅含完整无 NaN 日
-        day_actual:   {date: (96, C_ACTUAL) ndarray}                 仅含完整无 NaN 日
+        day_boundary: {date: (96, C_BOUNDARY + N_TIME_ENC) ndarray}  仅含 d ≥ boundary_cutoff
+        day_history:  {date: (96, C_HISTORY) ndarray}                仅含 d ≥ history_cutoff
+        day_actual:   {date: (96, C_ACTUAL) ndarray}                 仅含 d ≥ actual_cutoff
         day_targets: {date: (steps_per_day,) ndarray}
         c_total: 总通道数 = C_BOUNDARY + N_TIME_ENC + C_HISTORY + C_ACTUAL
         steps_per_day: 24 或 96
@@ -127,6 +155,15 @@ def build_daily_arrays(
     if target_col not in df_raw.columns:
         raise ValueError(f"{spec.market_id}: target {target_col!r} 不在数据集中")
 
+    # ── 各 stream 的"shift 后可见起点日" cutoff ──────────────
+    cutoff_b = _stream_cutoff_date(df_shifted, boundary_cols_present)
+    cutoff_h = _stream_cutoff_date(df_shifted, history_cols_present)
+    cutoff_a = _stream_cutoff_date(df_shifted, actual_cols_present)
+    logger.info(
+        "%s stream cutoff（shift 后首非空）: boundary=%s, history=%s, actual=%s",
+        spec.market_id, cutoff_b, cutoff_h, cutoff_a,
+    )
+
     c_boundary = len(boundary_cols_present) + N_TIME_ENC
     c_history = len(history_cols_present)
     c_actual = len(actual_cols_present)
@@ -138,7 +175,6 @@ def build_daily_arrays(
     day_actual: Dict = {}
     day_targets: Dict = {}
     valid: List = []
-    skipped_b = skipped_h = skipped_a = 0
 
     for d_ts in date_range:
         d = d_ts.date()
@@ -146,8 +182,6 @@ def build_daily_arrays(
         raw_shift = df_shifted.reindex(grid)
         raw_orig = df_raw.reindex(grid)
 
-        # 单 stream 仅在"全列全 slot 全 NaN"时跳过；部分 NaN 由 Dataset 端
-        # nan_to_num 填 0（与旧 Conv2D 行为对齐，避免空洞列把样本数压缩太多）
         steps = np.arange(SLOTS_PER_DAY, dtype=np.float32)
         dow = float(pd.Timestamp(d).dayofweek)
         te = np.column_stack([
@@ -157,29 +191,26 @@ def build_daily_arrays(
             np.full(SLOTS_PER_DAY, np.cos(2 * np.pi * dow / 7), dtype=np.float32),
         ])
 
+        # 列级 cutoff 决定该 stream 该日是否入 dict；进入 dict 后列内部零星 NaN
+        # 由 Dataset 端 nan_to_num(0) 容忍——这是方案 B 的设计：训练窗口由短板列
+        # 硬截断，而非"任何 NaN 就跳整天"。
         if boundary_cols_present:
-            l0 = raw_shift[boundary_cols_present].values.astype(np.float32)
-            if not np.isfinite(l0).any():
-                skipped_b += 1
-            else:
+            if cutoff_b is None or d >= cutoff_b:
+                l0 = raw_shift[boundary_cols_present].values.astype(np.float32)
                 day_boundary[d] = np.concatenate([l0, te], axis=1).astype(np.float32)
         else:
             day_boundary[d] = te.astype(np.float32)
 
         if history_cols_present:
-            l1 = raw_shift[history_cols_present].values.astype(np.float32)
-            if not np.isfinite(l1).any():
-                skipped_h += 1
-            else:
+            if cutoff_h is None or d >= cutoff_h:
+                l1 = raw_shift[history_cols_present].values.astype(np.float32)
                 day_history[d] = l1
         else:
             day_history[d] = np.zeros((SLOTS_PER_DAY, 0), dtype=np.float32)
 
         if actual_cols_present:
-            l2 = raw_shift[actual_cols_present].values.astype(np.float32)
-            if not np.isfinite(l2).any():
-                skipped_a += 1
-            else:
+            if cutoff_a is None or d >= cutoff_a:
+                l2 = raw_shift[actual_cols_present].values.astype(np.float32)
                 day_actual[d] = l2
         else:
             day_actual[d] = np.zeros((SLOTS_PER_DAY, 0), dtype=np.float32)
@@ -199,12 +230,10 @@ def build_daily_arrays(
     valid = sorted(valid)
     logger.info(
         "%s [%s, freq=%s]: %d 日历日，%d 天有 target，"
-        "boundary dict %d 天（跳 %d 天） / history dict %d 天（跳 %d 天） / "
-        "actual dict %d 天（跳 %d 天）；"
+        "boundary dict %d 天 / history dict %d 天 / actual dict %d 天；"
         "通道 c_total=%d (boundary=%d+%d_te, history=%d, actual=%d)",
         spec.market_id, target_col, freq, len(date_range), len(valid),
-        len(day_boundary), skipped_b, len(day_history), skipped_h,
-        len(day_actual), skipped_a,
+        len(day_boundary), len(day_history), len(day_actual),
         c_total, len(boundary_cols_present), N_TIME_ENC, c_history, c_actual,
     )
     resolved_stream_cols = {
